@@ -10,6 +10,7 @@ import asyncio
 import dataclasses
 import json
 import queue
+import sys
 import threading
 import webbrowser
 from contextlib import asynccontextmanager
@@ -62,12 +63,16 @@ def _err(message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
-def _find_binary(name: str, configured: str) -> str | None:
+def _find_handbrake(cfg: Any) -> str | None:
     """Delegate to config.py — the single source of truth for binary discovery."""
-    config = _config_module()
-    candidates = (config.makemkv_candidates() if "makemkv" in name.lower()
-                  else config.handbrake_candidates())
-    return config.find_binary(name, configured or "", candidates)
+    return _config_module().resolve_binaries(cfg)
+
+
+def _tmdb_key(cfg: Any) -> str:
+    """Configured TMDb credential, falling back to the build-time baked one."""
+    from . import metadata  # lazy
+
+    return metadata.resolve_api_key(getattr(cfg, "tmdb_api_key", "") or "")
 
 
 def _serialize_dc(obj: Any) -> dict:
@@ -77,14 +82,23 @@ def _serialize_dc(obj: Any) -> dict:
 # ------------------------------------------------------------------- models
 
 
+class EpisodeAssignment(BaseModel):
+    title_index: int
+    season: int
+    episode: int
+    name: str = ""
+
+
 class JobCreate(BaseModel):
     drive: str
-    titles: list[int] = Field(min_length=1)
+    kind: str = "movie"  # "movie" | "series"
     tmdb_id: int | None = None
     title: str = Field(min_length=1)
     year: int | None = None
     profile: str = "hevc"
     disc_name: str = ""
+    titles: list[int] = Field(default_factory=list)          # movie
+    episodes: list[EpisodeAssignment] = Field(default_factory=list)  # series
 
 
 # ------------------------------------------------------------------- routes
@@ -100,64 +114,112 @@ def health() -> dict:
     try:
         cfg = _load_config()
     except Exception as exc:
-        return {"ok": False, "binaries": {"makemkv": False, "handbrake": False},
-                "webdav_ok": None, "tmdb_key_set": False, "config_ok": False,
-                "error": str(exc)}
+        return {"ok": False, "binaries": {"handbrake": False},
+                "destination_ok": None, "tmdb_key_set": False,
+                "config_ok": False, "error": str(exc)}
     try:
-        mk = _find_binary("makemkvcon", getattr(cfg, "makemkv_path", ""))
-        hb = _find_binary("HandBrakeCLI", getattr(cfg, "handbrake_path", ""))
+        hb = _find_handbrake(cfg)
     except Exception:
-        mk = hb = None
-    webdav_ok: bool | None = None
-    if getattr(cfg, "webdav_url", ""):
-        try:
-            webdav_ok, _msg = _test_webdav(cfg)
-        except Exception:
-            webdav_ok = False
-    tmdb_key_set = bool(getattr(cfg, "tmdb_api_key", ""))
-    ok = bool(mk and hb) and webdav_ok is not False
+        hb = None
+    destination_ok = _check_destination(cfg)
+    tmdb_key_set = bool(_tmdb_key(cfg))
+    dvdcss_ok = _dvdcss_present()
+    ok = bool(hb) and dvdcss_ok and destination_ok is not False
     return {"ok": ok,
-            "binaries": {"makemkv": bool(mk), "handbrake": bool(hb)},
-            "webdav_ok": webdav_ok, "tmdb_key_set": tmdb_key_set,
-            "config_ok": True}
+            "binaries": {"handbrake": bool(hb)},
+            "destination_ok": destination_ok, "tmdb_key_set": tmdb_key_set,
+            "dvdcss_ok": dvdcss_ok, "config_ok": True}
+
+
+def _dvdcss_present() -> bool:
+    """Is CSS decryption available? Without it, encrypted DVDs cannot be read."""
+    try:
+        from . import dvdcss  # lazy
+
+        if sys.platform.startswith("win"):
+            return (_config_module().bundled_dir() / dvdcss.DLL_NAME).is_file()
+        return dvdcss._find_system_library() is not None
+    except Exception:
+        return False
+
+
+@app.post("/api/setup/libdvdcss")
+def setup_libdvdcss():
+    """Fetch libdvdcss on first run (Windows). Surfaced, never silent."""
+    from . import dvdcss  # lazy
+
+    try:
+        path = dvdcss.ensure_libdvdcss(
+            _config_module().bundled_dir(), manager.publish
+        )
+    except dvdcss.DvdCssError as exc:
+        return _err(str(exc), 502)
+    except Exception as exc:
+        return _err(f"libdvdcss setup failed: {exc}", 502)
+    return {"ok": True, "path": str(path) if path else None}
+
+
+def _check_destination(cfg: Any) -> bool | None:
+    """True/False for a reachable destination, None when nothing is set up."""
+    kind = (getattr(cfg, "destination_kind", "") or "local").lower()
+    if kind == "webdav":
+        if not getattr(cfg, "webdav_url", ""):
+            return None
+        try:
+            ok, _msg = _test_webdav(cfg)
+            return ok
+        except Exception:
+            return False
+    try:
+        from . import destination  # lazy
+
+        destination.for_config(cfg)
+        return True
+    except Exception:
+        return False
 
 
 @app.get("/api/drives")
 def drives():
-    """Rescan drives on every call (disc.py applies its own 20s timeout)."""
+    """Enumerate optical drives via OS facilities — no external binary."""
     try:
-        cfg = _load_config()
-        mk = _find_binary("makemkvcon", getattr(cfg, "makemkv_path", ""))
-        if not mk:
-            return _err("MakeMKV (makemkvcon) not found", 503)
-        from . import disc  # lazy
+        from . import drives as drives_mod  # lazy
 
-        return [_serialize_dc(d) for d in disc.list_drives(mk)]
+        return [_serialize_dc(d) for d in drives_mod.list_drives()]
     except Exception as exc:
         return _err(f"Drive scan failed: {exc}", 500)
 
 
-@app.get("/api/drives/{drive_id}/titles")
-def titles(drive_id: str):
+@app.get("/api/titles")
+def titles(device: str = Query(min_length=1)):
+    """Scan one optical device for titles. `device` is "/dev/sr0" or "D:\\"."""
     try:
         cfg = _load_config()
-        mk = _find_binary("makemkvcon", getattr(cfg, "makemkv_path", ""))
-        if not mk:
-            return _err("MakeMKV (makemkvcon) not found", 503)
-        from . import disc  # lazy
+        hb = _find_handbrake(cfg)
+        if not hb:
+            return _err("HandBrakeCLI not found", 503)
+        from . import scan  # lazy
 
-        found = disc.list_titles(mk, drive_id,
+        found = scan.scan_titles(hb, device,
                                  getattr(cfg, "min_title_seconds", 600))
         return [_serialize_dc(t) for t in found]
     except Exception as exc:
         return _err(f"Reading titles failed: {exc}", 500)
 
 
+@app.get("/api/disc/hint")
+def disc_hint(label: str = ""):
+    """Classify a disc label as movie or series; drives the UI's default mode."""
+    from . import metadata  # lazy
+
+    return _serialize_dc(metadata.parse_disc_label(label))
+
+
 @app.get("/api/tmdb/search")
-def tmdb_search(q: str = Query(min_length=1)):
+def tmdb_search(q: str = Query(min_length=1), kind: str = "movie"):
     try:
         cfg = _load_config()
-        key = getattr(cfg, "tmdb_api_key", "") or ""
+        key = _tmdb_key(cfg)
         if not key:
             return _err("TMDb API key not configured — open Settings", 400)
         from . import metadata  # lazy
@@ -168,9 +230,25 @@ def tmdb_search(q: str = Query(min_length=1)):
             query = metadata.clean_query(q) or q
         except Exception:
             query = q
+        if kind == "tv":
+            return [_serialize_dc(s) for s in metadata.search_shows(key, query)]
         return [_serialize_dc(m) for m in metadata.search_movies(key, query)]
     except Exception as exc:
         return _err(f"TMDb search failed: {exc}", 502)
+
+
+@app.get("/api/tmdb/tv/{tmdb_id}/season/{season}")
+def tmdb_season(tmdb_id: int, season: int):
+    try:
+        cfg = _load_config()
+        key = _tmdb_key(cfg)
+        if not key:
+            return _err("TMDb API key not configured — open Settings", 400)
+        from . import metadata  # lazy
+
+        return [_serialize_dc(e) for e in metadata.season_episodes(key, tmdb_id, season)]
+    except Exception as exc:
+        return _err(f"TMDb season lookup failed: {exc}", 502)
 
 
 @app.get("/api/jobs")
@@ -178,18 +256,61 @@ def jobs_list():
     return manager.list_jobs()
 
 
+def _build_targets(body: JobCreate) -> list:
+    """Turn the request into TitleTargets, resolving Jellyfin paths here.
+
+    Naming stays server-side so the client never dictates a filesystem path.
+    """
+    from . import metadata  # lazy
+    from .jobs import TitleTarget
+
+    title = body.title.strip()
+    if body.kind == "series":
+        return [
+            TitleTarget(
+                title_index=ep.title_index,
+                relpath=metadata.jellyfin_episode_relpath(
+                    series=title, year=body.year, tmdb_id=body.tmdb_id,
+                    season=ep.season, episode=ep.episode, ep_title=ep.name,
+                ).as_posix(),
+            )
+            for ep in body.episodes
+        ]
+
+    base = metadata.jellyfin_movie_relpath(title, body.year, body.tmdb_id)
+    targets = []
+    for i, index in enumerate(body.titles, start=1):
+        # Extra titles (bonus features) share the movie folder under a
+        # disambiguated name so Jellyfin still matches the main feature.
+        rel = base if i == 1 else base.parent / f"{base.stem} - Title {i}{base.suffix}"
+        targets.append(TitleTarget(title_index=index, relpath=rel.as_posix()))
+    return targets
+
+
 @app.post("/api/jobs", status_code=201)
 def jobs_create(body: JobCreate):
     if body.profile not in ("hevc", "h264"):
         return _err("profile must be 'hevc' or 'h264'", 400)
-    if manager.has_active_duplicate(body.drive, body.titles):
+    if body.kind not in ("movie", "series"):
+        return _err("kind must be 'movie' or 'series'", 400)
+    if body.kind == "series" and not body.episodes:
+        return _err("A series job needs at least one episode assignment", 400)
+    if body.kind == "movie" and not body.titles:
+        return _err("A movie job needs at least one title", 400)
+
+    try:
+        targets = _build_targets(body)
+    except Exception as exc:
+        return _err(f"Could not build destination paths: {exc}", 400)
+
+    if manager.has_active_duplicate(body.drive, [t.title_index for t in targets]):
         return _err("This disc is already being ripped", 409)
     try:
         job = manager.create_job(
             drive=body.drive,
-            title_indices=body.titles,
+            targets=targets,
             tmdb_id=body.tmdb_id,
-            movie_title=body.title.strip(),
+            display_title=body.title.strip(),
             year=body.year,
             profile=body.profile,
             disc_name=body.disc_name,

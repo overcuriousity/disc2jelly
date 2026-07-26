@@ -1,10 +1,14 @@
 """Job model, queue, and pipeline runner for Disc2Jelly.
 
 Owns the SACRED event bus: ``subscribe() -> queue.Queue`` / ``publish(event)``.
-Sibling modules (makemkv, handbrake, metadata, webdav, config) are imported
-lazily inside ``_default_stages`` so this module — and its tests — work even
-when those modules do not exist yet. Tests inject fake stage callables via
+Sibling modules (handbrake, destination, config) are imported lazily inside
+``_default_stages``. Tests inject fake stage callables via
 ``JobManager(cfg_getter, stages=StageFuncs(...))``.
+
+There is no rip stage: HandBrake reads the DVD directly, so each title is a
+single encode pass straight from the drive. A job carries a list of
+``TitleTarget`` — one per output file — which makes a movie (one target) and a
+season disc (one target per episode) the same shape.
 """
 from __future__ import annotations
 
@@ -24,7 +28,6 @@ EmitFn = Callable[[dict], None]
 class Stage(Enum):
     DETECT = "DETECT"
     IDENTIFY = "IDENTIFY"
-    RIP = "RIP"
     ENCODE = "ENCODE"
     UPLOAD = "UPLOAD"
     CLEANUP = "CLEANUP"
@@ -41,15 +44,30 @@ class CancelledError(Exception):
 
 
 @dataclass
+class TitleTarget:
+    """One output file: which disc title to encode, and where it belongs.
+
+    The relpath is resolved once at job creation, where the TMDb data is
+    already in hand, so the pipeline never has to know about movies vs series.
+    """
+
+    title_index: int
+    relpath: str  # posix, relative to the destination root
+
+    def serialize(self) -> dict[str, Any]:
+        return {"title_index": self.title_index, "relpath": self.relpath}
+
+
+@dataclass
 class Job:
     """In-memory job per SPEC §Pipeline & job model."""
 
     id: str
     disc_name: str
     drive: str
-    title_indices: list[int]
+    targets: list[TitleTarget]
     tmdb_id: int | None
-    movie_title: str
+    display_title: str  # movie title or series name, for the UI
     year: int | None
     profile: str  # "hevc" | "h264"
     status: Stage
@@ -59,14 +77,18 @@ class Job:
         default_factory=threading.Event, repr=False, compare=False
     )
 
+    @property
+    def title_indices(self) -> list[int]:
+        return [t.title_index for t in self.targets]
+
     def serialize(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "disc_name": self.disc_name,
             "drive": self.drive,
-            "title_indices": list(self.title_indices),
+            "targets": [t.serialize() for t in self.targets],
             "tmdb_id": self.tmdb_id,
-            "movie_title": self.movie_title,
+            "display_title": self.display_title,
             "year": self.year,
             "profile": self.profile,
             "status": self.status.value,
@@ -79,69 +101,49 @@ class Job:
 class StageFuncs:
     """Injectable pipeline stage callables.
 
-    Signatures (bound forms — binary paths / WebDAV credentials are already
-    resolved by the JobManager from the current Config):
-      rip(drive_id: str, title: int, out_dir: Path, emit, cancel) -> Path
-      encode(src: Path, dst: Path, profile: str, quality: int, emit, cancel) -> Path
-      upload(local: Path, rel_dest: str, emit, cancel, job_id: str) -> None
-      relpath(title: str, year: int | None, tmdb_id: int | None) -> Path
+    Signatures (bound forms — the HandBrake path and destination credentials
+    are already resolved by the JobManager from the current Config):
+      encode(source: str, title_index: int, dst: Path, profile: str,
+             quality: int, emit, cancel) -> Path
+      send(local: Path, rel_dest: str, emit, cancel, job_id: str) -> None
     """
 
-    rip: Callable[[str, int, Path, EmitFn, threading.Event], Path]
-    encode: Callable[[Path, Path, str, int, EmitFn, threading.Event], Path]
-    upload: Callable[[Path, str, EmitFn, threading.Event, str], None]
-    relpath: Callable[[str, int | None, int | None], Path]
+    encode: Callable[[str, int, Path, str, int, EmitFn, threading.Event], Path]
+    send: Callable[[Path, str, EmitFn, threading.Event, str], None]
 
 
-def _resolve_binary(name: str, configured: str) -> str:
-    """Resolve a binary path via config.find_binary, with graceful fallbacks.
-
-    Candidate paths come from config.py — the single source of truth for
-    binary discovery (handles makemkvcon64.exe and env-var expansion).
-    """
+def _resolve_handbrake(cfg: Any) -> str:
+    """HandBrakeCLI path via config.resolve_binaries, with graceful fallbacks."""
+    name = "HandBrakeCLI"
     try:
-        from . import config as _config  # lazy: may not exist yet
+        from . import config as _config  # lazy by design
 
-        candidates = (_config.makemkv_candidates() if "makemkv" in name.lower()
-                      else _config.handbrake_candidates())
-        found = _config.find_binary(name, configured, candidates)
+        found = _config.resolve_binaries(cfg)
         if found:
             return found
     except Exception:
         pass
-    if configured:
-        return configured
-    return shutil.which(name) or name
+    configured = (getattr(cfg, "handbrake_path", "") or "").strip()
+    return configured or shutil.which(name) or name
 
 
 def _default_stages(cfg: Any) -> StageFuncs:
     """Build the real pipeline stages from the current config (lazy imports)."""
-    from . import handbrake, makemkv, metadata, webdav  # lazy by design
+    from . import destination, handbrake  # lazy by design
 
-    mk_path = _resolve_binary("makemkvcon", getattr(cfg, "makemkv_path", "") or "")
-    hb_path = _resolve_binary("HandBrakeCLI", getattr(cfg, "handbrake_path", "") or "")
-    min_title_seconds = getattr(cfg, "min_title_seconds", 600)
-    client = webdav.WebDAVClient(
-        getattr(cfg, "webdav_url", "") or "",
-        getattr(cfg, "webdav_user", "") or "",
-        getattr(cfg, "webdav_password", "") or "",
-    )
+    hb_path = _resolve_handbrake(cfg)
+    target = destination.for_config(cfg)
 
-    def rip(drive_id: str, title: int, out_dir: Path, emit: EmitFn,
-            cancel: threading.Event) -> Path:
-        return makemkv.rip(mk_path, drive_id, title, out_dir, emit, cancel,
-                           minlength=min_title_seconds)
+    def encode(source: str, title_index: int, dst: Path, profile: str,
+               quality: int, emit: EmitFn, cancel: threading.Event) -> Path:
+        return handbrake.encode(hb_path, source, title_index, dst, profile,
+                                quality, emit, cancel)
 
-    def encode(src: Path, dst: Path, profile: str, quality: int, emit: EmitFn,
-               cancel: threading.Event) -> Path:
-        return handbrake.encode(hb_path, src, dst, profile, quality, emit, cancel)
+    def send(local: Path, rel_dest: str, emit: EmitFn,
+             cancel: threading.Event, job_id: str) -> None:
+        target.send(local, rel_dest, emit, cancel, job_id)
 
-    def upload(local: Path, rel_dest: str, emit: EmitFn,
-               cancel: threading.Event, job_id: str) -> None:
-        client.upload(local, rel_dest, emit, cancel, job_id)
-
-    return StageFuncs(rip=rip, encode=encode, upload=upload,
-                      relpath=metadata.jellyfin_movie_relpath)
+    return StageFuncs(encode=encode, send=send)
 
 
 def _work_root(cfg: Any) -> Path:
@@ -186,16 +188,16 @@ class JobManager:
                 for existing in self._jobs.values()
             )
 
-    def create_job(self, drive: str, title_indices: list[int],
-                   tmdb_id: int | None, movie_title: str, year: int | None,
+    def create_job(self, drive: str, targets: list[TitleTarget],
+                   tmdb_id: int | None, display_title: str, year: int | None,
                    profile: str, disc_name: str = "") -> Job:
         job = Job(
             id=uuid.uuid4().hex,
             disc_name=disc_name,
             drive=drive,
-            title_indices=list(title_indices),
+            targets=list(targets),
             tmdb_id=tmdb_id,
-            movie_title=movie_title,
+            display_title=display_title,
             year=year,
             profile=profile,
             status=Stage.DETECT,  # queued, waiting for the worker
@@ -209,7 +211,7 @@ class JobManager:
             "stage": "APP",
             "status": "running",
             "percent": None,
-            "detail": f"Queued: {movie_title}",
+            "detail": f"Queued: {display_title}",
         })
         self._pending.put(job.id)
         return job
@@ -349,85 +351,56 @@ class JobManager:
         stages = self._stages or _default_stages(cfg)
         work_dir = _work_root(cfg) / job.id
         work_dir.mkdir(parents=True, exist_ok=True)
-        keep_mkv = bool(getattr(cfg, "keep_mkv", False))
         quality = (getattr(cfg, "hevc_quality", 22) if job.profile == "hevc"
                    else getattr(cfg, "h264_quality", 20))
 
         self._check_cancel(job)
-        n = len(job.title_indices)
-        encoded: list[tuple[Path, str]] = []  # (encoded file, upload rel path)
+        n = len(job.targets)
 
         try:
-            for i, title in enumerate(job.title_indices, start=1):
-                # ---- RIP ----
-                self._set_running(job, Stage.RIP,
-                                  f"Ripping disc title {i} of {n}")
-                rip_emit = self._emit_for(job, Stage.RIP)
-                rip_dir = work_dir / f"title{i}"
-                rip_dir.mkdir(parents=True, exist_ok=True)
-                mkv = stages.rip(job.drive, title, rip_dir, rip_emit,
-                                 job.cancel_event)
-                self._check_cancel(job)
-                rip_emit({"status": "done", "percent": 100.0,
-                          "detail": f"Rip of title {i} complete"})
+            # Encode and send one title at a time: a season disc never stacks
+            # several finished files on the temp drive at once.
+            for i, target in enumerate(job.targets, start=1):
+                rel_dest = Path(target.relpath)
 
-                # ---- ENCODE ----
-                rel = Path(stages.relpath(job.movie_title, job.year, job.tmdb_id))
-                if i == 1:
-                    rel_dest = rel
-                else:  # extra titles share the movie folder, disambiguated name
-                    rel_dest = rel.parent / f"{rel.stem} - Title {i}{rel.suffix}"
+                # ---- ENCODE (straight off the disc, no rip stage) ----
                 dst = work_dir / rel_dest.name
                 self._set_running(job, Stage.ENCODE,
-                                  f"Shrinking movie file {i} of {n}")
+                                  f"Ripping and shrinking file {i} of {n}")
                 enc_emit = self._emit_for(job, Stage.ENCODE)
-                out = Path(stages.encode(Path(mkv), dst, job.profile, quality,
-                                         enc_emit, job.cancel_event))
+                out = Path(stages.encode(job.drive, target.title_index, dst,
+                                         job.profile, quality, enc_emit,
+                                         job.cancel_event))
                 self._check_cancel(job)
                 enc_emit({"status": "done", "percent": 100.0,
-                          "detail": f"Encoding of file {i} complete"})
-                encoded.append((out, rel_dest.as_posix()))
+                          "detail": f"File {i} of {n} complete"})
 
-            # ---- UPLOAD ----
-            m = len(encoded)
-            for j, (local, rel_dest) in enumerate(encoded, start=1):
-                self._set_running(job, Stage.UPLOAD,
-                                  f"Saving to server {j} of {m}")
+                # ---- SEND ----
+                self._set_running(job, Stage.UPLOAD, f"Saving {i} of {n}")
                 up_emit = self._emit_for(job, Stage.UPLOAD)
-                stages.upload(local, rel_dest, up_emit, job.cancel_event, job.id)
+                stages.send(out, rel_dest.as_posix(), up_emit,
+                            job.cancel_event, job.id)
                 self._check_cancel(job)
                 up_emit({"status": "done", "percent": 100.0,
-                         "detail": f"Upload {j} of {m} complete"})
+                         "detail": f"Saved {i} of {n}"})
+                out.unlink(missing_ok=True)
 
             # ---- CLEANUP ----
             self._set_running(job, Stage.CLEANUP, "Cleaning up temporary files",
                               percent=None)
-            self._cleanup(work_dir, keep_mkv=keep_mkv)
-            self._finish(job, Stage.DONE, f"Done — {job.movie_title} is on the server")
+            self._cleanup(work_dir)
+            self._finish(job, Stage.DONE,
+                         f"Done — {job.display_title} is on the server")
         except BaseException:
-            # Best-effort cleanup of the encoded leftovers on failure too.
             try:
-                if not keep_mkv:
-                    self._cleanup(work_dir, keep_mkv=False)
+                self._cleanup(work_dir)
             except Exception:
                 pass
             raise
 
     @staticmethod
-    def _cleanup(work_dir: Path, keep_mkv: bool) -> None:
-        """Delete temp files. keep_mkv keeps the intermediate MakeMKV rips."""
+    def _cleanup(work_dir: Path) -> None:
+        """Delete the job's temp dir. Only encode outputs ever live here."""
         if not work_dir.exists():
             return
-        # Encoded files live at the job work-dir root; rips in title<i>/ subdirs.
-        for child in work_dir.iterdir():
-            if child.is_file():
-                child.unlink(missing_ok=True)
-        if not keep_mkv:
-            for child in work_dir.iterdir():
-                if child.is_dir():
-                    shutil.rmtree(child, ignore_errors=True)
-        try:
-            if not any(work_dir.iterdir()):
-                work_dir.rmdir()
-        except OSError:
-            pass
+        shutil.rmtree(work_dir, ignore_errors=True)

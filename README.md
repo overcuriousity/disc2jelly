@@ -2,28 +2,41 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-Windows%20&#124;%20Linux-lightgrey.svg)](#requirements)
+[![Dependencies](https://img.shields.io/badge/windows%20deps-none-brightgreen.svg)](#requirements)
 
-One-click DVD & Blu-ray → Jellyfin ingest. Insert disc → confirm the detected movie → press **RIP & UPLOAD**. The app rips with MakeMKV, encodes with HandBrake (HEVC by default), names everything exactly the way Jellyfin wants it, and uploads to your WebDAV share. Local web UI — identical on Windows and Linux.
+One-click DVD → Jellyfin ingest, for films **and** TV series. Insert disc, confirm what it is, press **RIP & UPLOAD**. HandBrake reads the DVD directly and encodes in one pass (HEVC by default), everything is named exactly the way Jellyfin wants it, and the result lands in a folder or on your WebDAV share. Local web UI — identical on Windows and Linux.
 
 ```
-DVD/Blu-ray → MakeMKV (decrypt+rip) → HandBrake (HEVC/H.264 MKV)
-            → Jellyfin naming (TMDb auto / manual) → WebDAV upload → temp cleanup
+DVD → HandBrake (decrypt via libdvdcss + encode, single pass, HEVC/H.264 MKV)
+    → Jellyfin naming (TMDb film or series lookup) → folder or WebDAV → cleanup
 ```
+
+**On Windows there is nothing to install separately.** One `setup.exe` brings its own Python and HandBrake; libdvdcss is fetched once on first run.
+
+### Why DVD only
+
+Blu-ray is deliberately out of scope. AACS is an actively maintained broadcast-encryption scheme with key revocation, stacked with the BD+ virtual machine — there is no FOSS path that works reliably, and every tool that does (MakeMKV, AnyDVD HD, DVDFab) is proprietary, paid, and needs a key refreshed every couple of months. DVD's CSS, by contrast, has been cryptographically dead since 1999: libdvdcss breaks it with no key database, on every disc, forever. That difference is what makes a genuinely dependency-free build possible.
 
 ## Requirements
 
-| Component | Windows | Linux |
-|---|---|---|
-| Python | ≥ 3.11 from python.org (check "Add to PATH") | `python3` + `python3-venv` ( distro pkg ) |
-| MakeMKV | https://www.makemkv.com/download/ (installs `makemkvcon`) | distro pkg or makemkv.com Linux build |
-| HandBrakeCLI | https://handbrake.fr/downloads2.php (CLI zip, extract e.g. to `C:\Program Files\HandBrake\`) | `handbrake-cli` (Debian/Ubuntu) or Flatpak |
-| WebDAV | any WebDAV endpoint (Nextcloud, NAS, …) reachable from both PCs | same |
-| TMDb key | free: themoviedb.org account → Settings → API (v3 key or v4 Read Access Token) | same |
+**Windows:** none. Download the installer, run it, done.
 
-MakeMKV is shareware; Blu-ray ripping requires a valid (free beta or paid) key. DVD-only works indefinitely.
+**Linux** (runs from source):
+
+| Component | Package |
+|---|---|
+| Python ≥ 3.11 | `python3`, `python3-venv` |
+| HandBrakeCLI | `handbrake-cli` (Debian/Ubuntu), `HandBrake-cli` (Fedora/RPM Fusion) |
+| libdvdcss | `libdvdcss2` via `libdvd-pkg` (Debian/Ubuntu), `libdvdcss` (Fedora/RPM Fusion) |
+
+A TMDb API key is optional — without one, type film and series names by hand.
 
 ## Install & start
+
+**Windows:** run `Disc2Jelly-Setup-*.exe`. It asks once where finished files should go, then puts a shortcut on the desktop.
+
+> The installer is unsigned, so Windows SmartScreen shows "Windows protected your PC" the first time. Click **More info** → **Run anyway**. Avoiding that warning needs a paid code-signing certificate.
 
 **Linux:**
 ```bash
@@ -31,16 +44,42 @@ cd disc2jelly
 ./start_linux.sh        # creates venv, installs deps, starts app, opens browser
 ```
 
-**Windows:** double-click `start_windows.bat` (first run creates a venv and installs deps). The app opens at http://127.0.0.1:8642.
+The app opens at http://127.0.0.1:8642.
+
+## Building the Windows installer
+
+Must be built **on Windows** — PyInstaller cannot cross-compile.
+
+```powershell
+copy build_config.example.toml build_config.toml   # fill in TMDb key, destination
+powershell -ExecutionPolicy Bypass -File build\build_windows.ps1
+```
+
+Needs [Inno Setup 6](https://jrsoftware.org/isdl.php). Output lands in `dist\`.
+
+Before a real build, pin the third-party checksums once:
+
+```powershell
+python build\fetch_deps.py --print-hashes
+```
+
+Paste the two digests into `build/fetch_deps.py` (`HANDBRAKE_SHA256`) and `disc2jelly/app/dvdcss.py` (`EXPECTED_SHA256`). Until you do, `fetch_deps.py` refuses to build and the libdvdcss download is trusted on HTTPS alone.
+
+### A note on credentials
+
+`build_windows.ps1` bakes the TMDb key, WebDAV URL and username into the binary — none of those are secret. It does **not** bake the WebDAV password: PyInstaller performs no obfuscation, so any compiled-in string is recoverable with `strings`. The installer wizard collects the password on the target machine instead. `-BakePassword` exists for private builds; use an app password scoped to the destination share, and never publish such an installer.
 
 ## First-time setup (2 minutes, once per PC)
 
+On Windows the installer already did this. Otherwise:
+
 1. Click the **gear icon** (Settings).
-2. **WebDAV**: URL pointing *into your files tree*, e.g. `https://nas.example/remote.php/dav/files/yourname/movies-inbox`, user + app password. Click **Test WebDAV** → green dot.
-   - Point your Jellyfin "Movies" library at the same folder (mounted on the Jellyfin host). Disc2Jelly creates `Movies/<Title> (<Year>)/` underneath.
-3. **TMDb API key**: paste v3 key or v4 token → enables automatic movie detection from the disc label.
-4. Leave **temp dir** default unless your system drive is small (a Blu-ray needs ~50 GB temp).
-5. Save. All four status dots should be green.
+2. **Destination**: either a folder (including a mapped drive or `\\nas\media`) or a WebDAV URL with user + app password.
+   - Point your Jellyfin libraries at the same place. Disc2Jelly creates `Movies/…` and `Shows/…` underneath.
+3. **TMDb API key**: paste a v3 key or v4 token — enables automatic film and series detection from the disc label.
+4. Save. All four status dots should be green.
+
+Temp space is small now: the single-pass pipeline never writes a raw disc image, only the finished file, one at a time.
 
 ## Daily use (the wife workflow)
 
@@ -50,20 +89,35 @@ cd disc2jelly
 3. Choose profile: **Smaller file (HEVC)** (default) or **Maximum compatibility (H.264)**.
 4. Press **RIP & UPLOAD**. Watch the three bars (Rip → Encode → Upload). Done — the movie appears in Jellyfin after its next library scan (or trigger a scan in Jellyfin).
 
-Extras/bonus titles: pick additional titles in the dropdown before starting. Series discs: name episodes manually for now (movie workflow is the primary target).
+Extras/bonus titles: tick additional titles before starting; they land in the film's folder under a disambiguated name.
+
+### TV series
+
+Switch the disc panel to **TV episodes**. Disc2Jelly reads `SEASON`/`S01`/`DISC` markers off the volume label and preselects the mode and season number, then:
+
+1. Confirm the series (TMDb TV search).
+2. Set the season and the first episode number on this disc — press **Number them** to fill the rest in disc order.
+3. Episode titles from TMDb appear beside each row, so a wrong ordering is visible before anything is encoded. Adjust any number by hand.
+4. Press **RIP & UPLOAD**.
+
+Files land as `Shows/<Series> (<Year>) [tmdbid-<id>]/Season 01/<Series> S01E01 - <Episode>.mkv`.
+
+Titles the scanner detects as duplicates (DVDs routinely expose the main feature more than once) are flagged and start unticked, rather than being dropped — on a season disc, losing a real episode is worse than showing an extra row.
 
 ## Encoding defaults
 
 - Container: MKV. Video: x265 RF 22 (HEVC) or x264 RF 20. Audio: all tracks passthrough. Subtitles: all, none burned in. Chapter markers kept.
-- RF 22 HEVC typically lands a DVD main feature at ~1–2 GB and a Blu-ray at ~4–8 GB with visually transparent quality.
+- RF 22 HEVC typically lands a DVD main feature at ~1–2 GB with visually transparent quality.
 - Change quality in Settings (`hevc_quality` / `h264_quality`, lower = better/bigger).
 
 ## Troubleshooting
 
-- **Red MakeMKV dot**: install MakeMKV or set the binary path manually in Settings (`makemkv_path`). Linux: check the user can access the optical drive (`sg` group / udev rules).
-- **"Registration expired"**: MakeMKV beta key lapsed — update key from the MakeMKV forum.
-- **Upload fails with quota/auth errors**: check Settings → Test WebDAV; use an app password, not your main password.
-- **Progress bar stalls on "Analyzing source"**: HandBrake scan of a big disc, normal for 1–3 min.
+- **Red "Disc reader" dot**: libdvdcss is missing. Windows: the app offers to download it — say yes. Linux: install your distro's `libdvdcss` package.
+- **Red "Movie shrinker" dot**: HandBrakeCLI not found. Linux: install `handbrake-cli`, or set the path in Settings (`handbrake_path`).
+- **No disc found**: Linux — check the user can access the optical drive (`cdrom` group / udev rules).
+- **Upload fails with quota/auth errors**: check Settings → Test server connection; use an app password, not your main password.
+- **Progress bar stalls on "Analyzing source"**: HandBrake is scanning the disc, normal for 1–3 min.
+- **A scratched disc fails partway**: the single-pass pipeline has no intermediate file to retry from. HandBrake pushes through most read errors with artefacts, but a badly damaged disc will lose the job.
 - Logs: open the log pane at the bottom of the page; every raw tool line is there.
 
 ## Development

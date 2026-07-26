@@ -1,0 +1,115 @@
+[12:04:11] hb_init: starting libhb thread
+[12:04:11] thread 7f2a1c0006c0 started ("libhb")
+HandBrake 1.7.3 (2024022300) - Linux x86_64 - https://handbrake.fr
+16 CPUs detected
+Opening /dev/sr0...
+[12:04:11] CSS decryption available
+[12:04:11] macgui: 10 Presets loaded
+[12:04:11] hb_scan: path=/dev/sr0, title_index=0
+[12:04:12] dvd: DVD has 4 title(s)
+[12:04:15] scan: decoding previews for title 1
+[12:04:18] scan: 10 previews, 720x576, 25.000 fps, autocrop = 0/0/6/6, aspect 16:9, PAR 64:45
+[12:04:24] libhb: scan thread found 4 valid title(s)
+JSON Title Set: {
+    "MainFeature": 0,
+    "TitleList": [
+        {
+            "Index": 1,
+            "Name": "BREAKINGBADS1",
+            "Path": "/dev/sr0",
+            "Type": 0,
+            "Duration": {
+                "Hours": 0,
+                "Minutes": 58,
+                "Seconds": 6,
+                "Ticks": 313740000
+            },
+            "ChapterList": [
+                { "Name": "Chapter 1", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 2", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 3", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 4", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 5", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 6", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 7", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } }
+            ],
+            "Geometry": { "Width": 720, "Height": 576, "PAR": { "Num": 64, "Den": 45 } },
+            "AudioList": [
+                { "TrackNumber": 1, "Language": "English", "LanguageCode": "eng", "Codec": 65536 },
+                { "TrackNumber": 2, "Language": "Deutsch", "LanguageCode": "deu", "Codec": 65536 }
+            ],
+            "SubtitleList": [
+                { "TrackNumber": 1, "Language": "English", "LanguageCode": "eng" }
+            ]
+        },
+        {
+            "Index": 2,
+            "Name": "BREAKINGBADS1",
+            "Path": "/dev/sr0",
+            "Type": 0,
+            "Duration": {
+                "Hours": 0,
+                "Minutes": 47,
+                "Seconds": 12,
+                "Ticks": 254880000
+            },
+            "ChapterList": [
+                { "Name": "Chapter 1", "Duration": { "Hours": 0, "Minutes": 9, "Seconds": 26 } },
+                { "Name": "Chapter 2", "Duration": { "Hours": 0, "Minutes": 9, "Seconds": 26 } },
+                { "Name": "Chapter 3", "Duration": { "Hours": 0, "Minutes": 9, "Seconds": 26 } },
+                { "Name": "Chapter 4", "Duration": { "Hours": 0, "Minutes": 9, "Seconds": 26 } },
+                { "Name": "Chapter 5", "Duration": { "Hours": 0, "Minutes": 9, "Seconds": 28 } }
+            ],
+            "Geometry": { "Width": 720, "Height": 576, "PAR": { "Num": 64, "Den": 45 } },
+            "AudioList": [
+                { "TrackNumber": 1, "Language": "English", "LanguageCode": "eng", "Codec": 65536 }
+            ],
+            "SubtitleList": []
+        },
+        {
+            "Index": 3,
+            "Name": "BREAKINGBADS1",
+            "Path": "/dev/sr0",
+            "Type": 0,
+            "Duration": {
+                "Hours": 0,
+                "Minutes": 58,
+                "Seconds": 6,
+                "Ticks": 313740000
+            },
+            "ChapterList": [
+                { "Name": "Chapter 1", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 2", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 3", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 4", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 5", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 6", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } },
+                { "Name": "Chapter 7", "Duration": { "Hours": 0, "Minutes": 8, "Seconds": 18 } }
+            ],
+            "Geometry": { "Width": 720, "Height": 576, "PAR": { "Num": 64, "Den": 45 } },
+            "AudioList": [
+                { "TrackNumber": 1, "Language": "English", "LanguageCode": "eng", "Codec": 65536 }
+            ],
+            "SubtitleList": []
+        },
+        {
+            "Index": 4,
+            "Name": "BREAKINGBADS1",
+            "Path": "/dev/sr0",
+            "Type": 0,
+            "Duration": {
+                "Hours": 0,
+                "Minutes": 1,
+                "Seconds": 30,
+                "Ticks": 8100000
+            },
+            "ChapterList": [
+                { "Name": "Chapter 1", "Duration": { "Hours": 0, "Minutes": 1, "Seconds": 30 } }
+            ],
+            "Geometry": { "Width": 720, "Height": 576, "PAR": { "Num": 64, "Den": 45 } },
+            "AudioList": [],
+            "SubtitleList": []
+        }
+    ]
+}
+[12:04:24] libhb: work result = 0

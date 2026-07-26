@@ -20,16 +20,16 @@ CONFIG_FILENAME = "config.json"
 
 @dataclass
 class Config:
+    destination_kind: str = "local"  # "local" | "webdav"
+    local_path: str = ""          # empty = destination.DEFAULT_LOCAL_ROOT
     webdav_url: str = ""          # e.g. https://nas.example/remote.php/dav/files/me/movies-inbox
     webdav_user: str = ""
     webdav_password: str = ""
-    tmdb_api_key: str = ""        # v3 api_key (or v4 read token)
+    tmdb_api_key: str = ""        # v3 api_key (or v4 read token); empty = baked default
     temp_dir: str = ""            # default: <config dir>/work
-    keep_mkv: bool = False        # keep intermediate MakeMKV file
     encoder: str = "hevc"         # "hevc" | "h264"
     hevc_quality: int = 22        # RF/CRF
     h264_quality: int = 20
-    makemkv_path: str = ""        # empty = auto-detect
     handbrake_path: str = ""      # empty = auto-detect
     min_title_seconds: int = 600  # filter junk titles
 
@@ -107,37 +107,33 @@ def find_binary(name: str, configured: str, os_candidates: list[str]) -> str | N
     return None
 
 
-def makemkv_candidates() -> list[str]:
-    if sys.platform.startswith("win"):
-        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-        pfx = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-        cands: list[str] = []
-        for base in dict.fromkeys((pf, pfx)):
-            for exe in ("makemkvcon64.exe", "makemkvcon.exe"):
-                cands.append(str(Path(base) / "MakeMKV" / exe))
-        return cands
-    return ["/usr/bin/makemkvcon", "/usr/local/bin/makemkvcon", "/opt/makemkv/bin/makemkvcon"]
+def bundled_dir() -> Path:
+    """Where the installer puts HandBrakeCLI and libdvdcss.
+
+    Frozen (PyInstaller): alongside the executable. Source checkout: ./vendor
+    next to the app package, so a dev can drop binaries there too.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent / "vendor"
 
 
 def handbrake_candidates() -> list[str]:
+    """Bundled copy first — the installer ships one and it is the known-good
+    version — then the usual system install locations."""
+    exe = "HandBrakeCLI.exe" if sys.platform.startswith("win") else "HandBrakeCLI"
+    cands = [str(bundled_dir() / exe)]
     if sys.platform.startswith("win"):
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
         pfx = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-        cands: list[str] = []
         for base in dict.fromkeys((pf, pfx)):
             cands.append(str(Path(base) / "HandBrake" / "HandBrakeCLI.exe"))
-        return cands
-    return ["/usr/bin/HandBrakeCLI", "/usr/local/bin/HandBrakeCLI"]
-
-
-def resolve_binaries(cfg: Config) -> tuple[str | None, str | None]:
-    """Return (makemkv_path, handbrake_path) honoring configured overrides."""
-    if sys.platform.startswith("win"):
-        mkv_name = "makemkvcon64.exe" if shutil.which("makemkvcon64.exe") else "makemkvcon"
-        hb_name = "HandBrakeCLI.exe"
     else:
-        mkv_name = "makemkvcon"
-        hb_name = "HandBrakeCLI"
-    makemkv = find_binary(mkv_name, cfg.makemkv_path, makemkv_candidates())
-    handbrake = find_binary(hb_name, cfg.handbrake_path, handbrake_candidates())
-    return makemkv, handbrake
+        cands += ["/usr/bin/HandBrakeCLI", "/usr/local/bin/HandBrakeCLI"]
+    return cands
+
+
+def resolve_binaries(cfg: Config) -> str | None:
+    """Locate HandBrakeCLI, honoring a configured override. None if absent."""
+    hb_name = "HandBrakeCLI.exe" if sys.platform.startswith("win") else "HandBrakeCLI"
+    return find_binary(hb_name, cfg.handbrake_path, handbrake_candidates())

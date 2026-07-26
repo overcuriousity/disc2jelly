@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -16,9 +17,7 @@ def test_defaults() -> None:
     assert cfg.encoder == "hevc"
     assert cfg.hevc_quality == 22
     assert cfg.h264_quality == 20
-    assert cfg.min_title_seconds == 600
-    assert cfg.keep_mkv is False
-    assert cfg.makemkv_path == ""
+    assert cfg.handbrake_path == ""
     assert cfg.temp_dir == ""
 
 
@@ -47,7 +46,7 @@ def test_save_load_roundtrip(tmp_path: Path) -> None:
         tmdb_api_key="abc123",
         encoder="h264",
         h264_quality=21,
-        keep_mkv=True,
+        local_path="/srv/media",
         min_title_seconds=900,
     )
     config.save(cfg, path=p)
@@ -74,7 +73,7 @@ def test_load_ignores_unknown_keys_and_bad_types(tmp_path: Path) -> None:
                 "webdav_url": "https://x",
                 "bogus_key": 42,
                 "hevc_quality": "twenty-two",  # wrong type -> dropped
-                "keep_mkv": 1,  # int not bool -> dropped
+                "min_title_seconds": "lots",  # wrong type -> dropped
                 "encoder": "h264",
             }
         ),
@@ -84,25 +83,25 @@ def test_load_ignores_unknown_keys_and_bad_types(tmp_path: Path) -> None:
     assert cfg.webdav_url == "https://x"
     assert cfg.encoder == "h264"
     assert cfg.hevc_quality == 22  # default kept
-    assert cfg.keep_mkv is False
+    assert cfg.min_title_seconds == 600  # default kept
 
 
 # --- find_binary -----------------------------------------------------------
 
 
 def test_find_binary_configured_exists(tmp_path: Path) -> None:
-    exe = tmp_path / "makemkvcon"
+    exe = tmp_path / "HandBrakeCLI"
     exe.write_text("#!/bin/sh\n", encoding="utf-8")
-    assert config.find_binary("makemkvcon", str(exe), ["/nope"]) == str(exe)
+    assert config.find_binary("HandBrakeCLI", str(exe), ["/nope"]) == str(exe)
 
 
 def test_find_binary_configured_missing_falls_to_which(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(config.shutil, "which", lambda name: "/usr/bin/makemkvcon")
+    monkeypatch.setattr(config.shutil, "which", lambda name: "/usr/bin/HandBrakeCLI")
     assert (
-        config.find_binary("makemkvcon", str(tmp_path / "missing"), [])
-        == "/usr/bin/makemkvcon"
+        config.find_binary("HandBrakeCLI", str(tmp_path / "missing"), [])
+        == "/usr/bin/HandBrakeCLI"
     )
 
 
@@ -116,16 +115,71 @@ def test_find_binary_probes_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 def test_find_binary_none_when_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config.shutil, "which", lambda name: None)
-    assert config.find_binary("makemkvcon", "", ["/nope/a", "/nope/b"]) is None
+    assert config.find_binary("HandBrakeCLI", "", ["/nope/a", "/nope/b"]) is None
 
 
 def test_candidates_cover_both_platforms() -> None:
-    mkv = config.makemkv_candidates()
     hb = config.handbrake_candidates()
-    assert mkv and hb
+    assert hb
     if sys.platform.startswith("win"):
-        assert any("makemkvcon" in c for c in mkv)
         assert any(c.endswith("HandBrakeCLI.exe") for c in hb)
     else:
-        assert "/usr/bin/makemkvcon" in mkv
         assert "/usr/bin/HandBrakeCLI" in hb
+
+
+# --- DVD-only config surface (MakeMKV removed) -------------------------------
+
+
+def test_config_has_no_makemkv_or_keep_mkv_fields() -> None:
+    names = {f.name for f in dataclasses.fields(config.Config)}
+    assert "makemkv_path" not in names
+    assert "keep_mkv" not in names
+
+
+def test_destination_defaults_to_local_with_no_path() -> None:
+    cfg = config.Config()
+    assert cfg.destination_kind == "local"
+    assert cfg.local_path == ""
+
+
+def test_makemkv_candidates_is_gone() -> None:
+    assert not hasattr(config, "makemkv_candidates")
+
+
+def test_resolve_binaries_returns_handbrake_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    exe = tmp_path / "HandBrakeCLI"
+    exe.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(config.shutil, "which", lambda name: None)
+    assert config.resolve_binaries(config.Config(handbrake_path=str(exe))) == str(exe)
+
+
+def test_resolve_binaries_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config.shutil, "which", lambda name: None)
+    monkeypatch.setattr(config, "handbrake_candidates", lambda: ["/nope/HandBrakeCLI"])
+    assert config.resolve_binaries(config.Config()) is None
+
+
+def test_bundled_handbrake_is_probed_before_a_system_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The installer ships HandBrakeCLI beside the app; prefer that copy."""
+    monkeypatch.setattr(config, "bundled_dir", lambda: tmp_path)
+    cands = config.handbrake_candidates()
+    assert cands[0].startswith(str(tmp_path))
+
+
+def test_bundled_dir_follows_the_frozen_executable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(config.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(config.sys, "executable", str(tmp_path / "Disc2Jelly.exe"))
+    assert config.bundled_dir() == tmp_path
+
+
+def test_bundled_dir_falls_back_to_the_repo_vendor_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(config.sys, "frozen", raising=False)
+    assert config.bundled_dir().name == "vendor"

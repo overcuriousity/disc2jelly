@@ -1,17 +1,19 @@
 """Tests for app.jobs.JobManager using injected FAKE pipeline stages.
 
-No real makemkv/handbrake/metadata/webdav modules are needed — the manager's
-stage callables are injected (JobManager(cfg_getter, stages=...)).
+The rip stage is gone: HandBrake reads the disc directly, so a job is a list
+of TitleTargets (title index + destination relpath) that each get encoded and
+sent. Stage callables are injected via JobManager(cfg_getter, stages=...).
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app.jobs import JobManager, Stage, StageFuncs
+from app.jobs import JobManager, Stage, StageFuncs, TitleTarget
 
 
 # ------------------------------------------------------------------ fakes
@@ -21,73 +23,55 @@ class FakeStages:
     """Configurable fake pipeline stages."""
 
     def __init__(self, fail_encode_calls: set[int] | None = None,
-                 rip_waits_for_cancel: bool = False) -> None:
-        import threading
-
-        self.uploads: list[tuple[str, str, str]] = []  # (file name, rel dest, job id)
-        self.rip_calls = 0
+                 encode_waits_for_cancel: bool = False) -> None:
+        self.sends: list[tuple[str, str, str]] = []  # (file name, rel dest, job id)
+        self.encodes: list[tuple[str, int, str]] = []  # (source, title, dst name)
         self.encode_calls = 0
         self.fail_encode_calls = fail_encode_calls or set()
-        self.rip_waits_for_cancel = rip_waits_for_cancel
-        self.rip_started = threading.Event()
+        self.encode_waits_for_cancel = encode_waits_for_cancel
+        self.encode_started = threading.Event()
 
     def funcs(self) -> StageFuncs:
-        return StageFuncs(rip=self.rip, encode=self.encode,
-                          upload=self.upload, relpath=self.relpath)
-
-    # signature mirrors the bound makemkv.rip
-    def rip(self, drive_id: str, title: int, out_dir: Path, emit, cancel) -> Path:
-        import threading  # noqa: F401  (kept for parity with real signature)
-
-        self.rip_calls += 1
-        self.rip_started.set()
-        emit({"status": "running", "percent": 50.0, "detail": "Saving title"})
-        if self.rip_waits_for_cancel:
-            cancel.wait(timeout=5.0)
-            raise RuntimeError("cancelled by user")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        produced = out_dir / f"title{title}.mkv"
-        produced.write_bytes(b"FAKE-MKV")
-        return produced
+        return StageFuncs(encode=self.encode, send=self.send)
 
     # signature mirrors the bound handbrake.encode
-    def encode(self, src: Path, dst: Path, profile: str, quality: int,
-               emit, cancel) -> Path:
+    def encode(self, source: str, title_index: int, dst: Path, profile: str,
+               quality: int, emit, cancel) -> Path:
         self.encode_calls += 1
+        self.encodes.append((str(source), title_index, Path(dst).name))
+        self.encode_started.set()
+        if self.encode_waits_for_cancel:
+            cancel.wait(timeout=5.0)
+            raise RuntimeError("cancelled by user")
         if self.encode_calls in self.fail_encode_calls:
             raise RuntimeError("encoder exploded")
         emit({"status": "running", "percent": 42.0, "fps": 98.2,
               "eta": "00:12:31", "detail": "Encoding"})
+        dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(b"FAKE-ENCODED")
         return dst
 
-    # signature mirrors WebDAVClient.upload
-    def upload(self, local: Path, rel_dest: str, emit, cancel, job_id: str) -> None:
-        self.uploads.append((Path(local).name, rel_dest, job_id))
-        emit({"status": "running", "percent": 100.0, "detail": "Uploading"})
-
-    # signature mirrors metadata.jellyfin_movie_relpath
-    def relpath(self, title: str, year: int | None, tmdb_id: int | None) -> Path:
-        name = title
-        if year:
-            name += f" ({year})"
-        if tmdb_id:
-            name += f" [tmdbid-{tmdb_id}]"
-        return Path("Movies") / name / f"{name}.mkv"
+    # signature mirrors destination.Destination.send
+    def send(self, local: Path, rel_dest: str, emit, cancel, job_id: str) -> None:
+        self.sends.append((Path(local).name, rel_dest, job_id))
+        emit({"status": "running", "percent": 100.0, "detail": "Saving"})
 
 
-def make_cfg(tmp_path: Path, keep_mkv: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(
+def make_cfg(tmp_path: Path, **kw) -> SimpleNamespace:
+    base = dict(
         temp_dir=str(tmp_path / "work"),
-        keep_mkv=keep_mkv,
         hevc_quality=22,
         h264_quality=20,
+        destination_kind="local",
+        local_path=str(tmp_path / "out"),
         webdav_url="https://nas.example/dav",
         webdav_user="u",
         webdav_password="p",
-        makemkv_path="",
         handbrake_path="",
+        min_title_seconds=600,
     )
+    base.update(kw)
+    return SimpleNamespace(**base)
 
 
 def make_manager(tmp_path: Path, fake: FakeStages, **cfg_kw) -> JobManager:
@@ -95,6 +79,10 @@ def make_manager(tmp_path: Path, fake: FakeStages, **cfg_kw) -> JobManager:
     mgr = JobManager(cfg_getter=lambda: cfg, stages=fake.funcs())
     mgr.start()
     return mgr
+
+
+def movie_target(index: int = 1, name: str = "Fake Movie (2020) [tmdbid-42]"):
+    return TitleTarget(title_index=index, relpath=f"Movies/{name}/{name}.mkv")
 
 
 def wait_for_status(mgr: JobManager, job_id: str,
@@ -117,103 +105,123 @@ TERMINAL = {Stage.DONE, Stage.ERROR, Stage.CANCELLED}
 # ------------------------------------------------------------------ tests
 
 
+def test_stage_enum_has_no_rip_stage() -> None:
+    assert not hasattr(Stage, "RIP")
+
+
 def test_happy_path_event_sequence(tmp_path):
     fake = FakeStages()
     mgr = make_manager(tmp_path, fake)
     sub = mgr.subscribe()
 
-    job = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=42,
-                         movie_title="Fake Movie", year=2020, profile="hevc")
+    job = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=42,
+                         display_title="Fake Movie", year=2020, profile="hevc")
     done = wait_for_status(mgr, job.id, TERMINAL)
 
     assert done.status is Stage.DONE
     assert done.error is None
 
-    # Drain the subscriber queue and check the event sequence for this job.
     events = []
     while not sub.empty():
         events.append(sub.get_nowait())
     stages = [e["stage"] for e in events if e.get("job_id") == job.id]
-    # Collapse consecutive duplicates (progress updates repeat a stage) and
-    # check the pipeline order: APP → RIP → ENCODE → UPLOAD → CLEANUP → DONE.
+    # One encode pass now, no RIP: APP -> ENCODE -> UPLOAD -> CLEANUP -> DONE.
     run = [s for i, s in enumerate(stages) if i == 0 or s != stages[i - 1]]
-    assert run == ["APP", "RIP", "ENCODE", "UPLOAD", "CLEANUP", "DONE"]
-    assert stages.count("RIP") >= 2  # start + progress + done events flowed
-    # Every event carries the sacred fields.
+    assert run == ["APP", "ENCODE", "UPLOAD", "CLEANUP", "DONE"]
+    assert "RIP" not in stages
     for e in events:
         if e.get("job_id") == job.id:
             assert e["status"] in ("running", "done", "error", "cancelled")
             assert "ts" in e
 
-    # Upload destination follows the Jellyfin movie relpath.
-    assert len(fake.uploads) == 1
-    _name, rel_dest, up_job = fake.uploads[0]
+    assert len(fake.sends) == 1
+    _name, rel_dest, up_job = fake.sends[0]
     assert rel_dest == ("Movies/Fake Movie (2020) [tmdbid-42]/"
                         "Fake Movie (2020) [tmdbid-42].mkv")
     assert up_job == job.id
 
-    # Temp dir cleaned up (keep_mkv=False).
     assert not (tmp_path / "work" / job.id).exists()
 
-    # list_jobs serializes with last event attached.
     listed = mgr.list_jobs()
     assert listed[0]["id"] == job.id
     assert listed[0]["status"] == "DONE"
     assert listed[0]["last_event"]["stage"] == "DONE"
 
 
-def test_multi_title_uploads_share_movie_folder(tmp_path):
+def test_encode_reads_the_drive_directly_with_the_title_index(tmp_path):
     fake = FakeStages()
     mgr = make_manager(tmp_path, fake)
-    job = mgr.create_job(drive="disc:0", title_indices=[1, 2], tmdb_id=None,
-                         movie_title="Two Part", year=None, profile="h264")
-    done = wait_for_status(mgr, job.id, TERMINAL)
-    assert done.status is Stage.DONE
-    dests = [d for _n, d, _j in fake.uploads]
-    assert dests == [
-        "Movies/Two Part/Two Part.mkv",
-        "Movies/Two Part/Two Part - Title 2.mkv",
+    job = mgr.create_job(drive="/dev/sr0", targets=[movie_target(index=4)],
+                         tmdb_id=None, display_title="X", year=None,
+                         profile="hevc")
+    wait_for_status(mgr, job.id, TERMINAL)
+    source, title, _dst = fake.encodes[0]
+    assert source == "/dev/sr0"
+    assert title == 4
+
+
+def test_each_target_carries_its_own_destination_path(tmp_path):
+    """A season disc is N targets, each with a full episode relpath."""
+    fake = FakeStages()
+    mgr = make_manager(tmp_path, fake)
+    targets = [
+        TitleTarget(1, "Shows/Breaking Bad (2008)/Season 01/Breaking Bad S01E01 - Pilot.mkv"),
+        TitleTarget(2, "Shows/Breaking Bad (2008)/Season 01/Breaking Bad S01E02 - Cat.mkv"),
     ]
+    job = mgr.create_job(drive="/dev/sr0", targets=targets, tmdb_id=1396,
+                         display_title="Breaking Bad", year=2008, profile="hevc")
+    done = wait_for_status(mgr, job.id, TERMINAL)
+
+    assert done.status is Stage.DONE
+    assert [d for _n, d, _j in fake.sends] == [t.relpath for t in targets]
+    assert [t for _s, t, _d in fake.encodes] == [1, 2]
+
+
+def test_local_file_is_removed_after_each_send(tmp_path):
+    """Encode/send run per title so a season disc never stacks up on disk."""
+    fake = FakeStages()
+    mgr = make_manager(tmp_path, fake)
+    targets = [movie_target(1, "A"), movie_target(2, "B")]
+    job = mgr.create_job(drive="/dev/sr0", targets=targets, tmdb_id=None,
+                         display_title="Two", year=None, profile="h264")
+    wait_for_status(mgr, job.id, TERMINAL)
+    assert not (tmp_path / "work" / job.id).exists()
 
 
 def test_encode_error_marks_job_and_queue_continues(tmp_path):
-    fake = FakeStages(fail_encode_calls={1})  # first encode (job 1) blows up
+    fake = FakeStages(fail_encode_calls={1})
     mgr = make_manager(tmp_path, fake)
 
-    job1 = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=None,
-                          movie_title="Broken", year=None, profile="hevc")
-    job2 = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=None,
-                          movie_title="Fine", year=2001, profile="hevc")
+    job1 = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=None,
+                          display_title="Broken", year=None, profile="hevc")
+    job2 = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=None,
+                          display_title="Fine", year=2001, profile="hevc")
 
     done1 = wait_for_status(mgr, job1.id, TERMINAL)
     done2 = wait_for_status(mgr, job2.id, TERMINAL)
 
     assert done1.status is Stage.ERROR
     assert "encoder exploded" in (done1.error or "")
-    assert done2.status is Stage.DONE  # queue kept going
+    assert done2.status is Stage.DONE
 
-    # Only the healthy job uploaded anything.
-    assert [j for _n, _d, j in fake.uploads] == [job2.id]
-
-    # An error event went out on the bus for job 1.
+    assert [j for _n, _d, j in fake.sends] == [job2.id]
     assert mgr._last_events[job1.id]["stage"] == "ERROR"
     assert mgr._last_events[job1.id]["status"] == "error"
 
 
-def test_cancel_during_rip(tmp_path):
-    fake = FakeStages(rip_waits_for_cancel=True)
+def test_cancel_during_encode(tmp_path):
+    fake = FakeStages(encode_waits_for_cancel=True)
     mgr = make_manager(tmp_path, fake)
 
-    job = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=None,
-                         movie_title="Long Rip", year=None, profile="hevc")
-    assert fake.rip_started.wait(timeout=5.0), "rip never started"
+    job = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=None,
+                         display_title="Long Encode", year=None, profile="hevc")
+    assert fake.encode_started.wait(timeout=5.0), "encode never started"
 
     assert mgr.cancel(job.id) is True
     done = wait_for_status(mgr, job.id, TERMINAL)
     assert done.status is Stage.CANCELLED
     assert mgr._last_events[job.id]["status"] == "cancelled"
 
-    # Cancelling again / unknown ids is harmless.
     assert mgr.cancel(job.id) is False
     assert mgr.cancel("does-not-exist") is False
 
@@ -224,35 +232,31 @@ def test_cancel_queued_job_before_start(tmp_path):
     mgr = JobManager(cfg_getter=lambda: cfg, stages=fake.funcs())
     mgr.start()
 
-    # Block the worker with a long rip so job 2 stays queued.
-    fake.rip_waits_for_cancel = True
-    job1 = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=None,
-                          movie_title="First", year=None, profile="hevc")
-    assert fake.rip_started.wait(timeout=5.0)
-    job2 = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=None,
-                          movie_title="Second", year=None, profile="hevc")
+    fake.encode_waits_for_cancel = True
+    job1 = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=None,
+                          display_title="First", year=None, profile="hevc")
+    assert fake.encode_started.wait(timeout=5.0)
+    job2 = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=None,
+                          display_title="Second", year=None, profile="hevc")
 
     assert mgr.cancel(job2.id) is True
     assert mgr.get_job(job2.id).status is Stage.CANCELLED
 
-    # Unblock job 1 and let everything settle; job 2 must stay CANCELLED.
     mgr.cancel(job1.id)
     done1 = wait_for_status(mgr, job1.id, TERMINAL)
     assert done1.status is Stage.CANCELLED
-    time.sleep(0.2)  # worker pops job2 and must skip it
+    time.sleep(0.2)
     assert mgr.get_job(job2.id).status is Stage.CANCELLED
-    assert fake.uploads == []
+    assert fake.sends == []
 
 
 def test_subscriber_replay_last_events(tmp_path):
     fake = FakeStages()
     mgr = make_manager(tmp_path, fake)
-    job = mgr.create_job(drive="disc:0", title_indices=[1], tmdb_id=7,
-                         movie_title="Replay Me", year=1999, profile="hevc")
+    job = mgr.create_job(drive="/dev/sr0", targets=[movie_target()], tmdb_id=7,
+                         display_title="Replay Me", year=1999, profile="hevc")
     wait_for_status(mgr, job.id, TERMINAL)
 
-    # A late-joining client replays retained state: exactly one last event
-    # per job, and it is the terminal DONE event.
     replay = mgr.last_events()
     by_job = {e["job_id"]: e for e in replay}
     assert by_job[job.id]["stage"] == "DONE"
@@ -260,84 +264,69 @@ def test_subscriber_replay_last_events(tmp_path):
     assert by_job[job.id]["percent"] == 100.0
 
 
-def test_keep_mkv_preserves_rip_but_removes_encode(tmp_path):
-    fake = FakeStages()
-    mgr = make_manager(tmp_path, fake, keep_mkv=True)
-    job = mgr.create_job(drive="disc:0", title_indices=[3], tmdb_id=None,
-                         movie_title="Keeper", year=None, profile="hevc")
-    done = wait_for_status(mgr, job.id, TERMINAL)
-    assert done.status is Stage.DONE
-    work = tmp_path / "work" / job.id
-    assert (work / "title1" / "title3.mkv").exists()  # intermediate rip kept
-    assert not list(work.glob("*.mkv"))  # encoded file removed after upload
-
-
-# ------------------------------------------------------------------ review fixes
-
-
-def test_resolve_binary_delegates_to_config_candidates(monkeypatch):
-    """jobs._resolve_binary must use config.py candidates (one source of truth)."""
-    from app import config, jobs
-
-    seen = {}
-
-    def fake_find_binary(name, configured, candidates):
-        seen["name"] = name
-        seen["configured"] = configured
-        seen["candidates"] = candidates
-        return "/found/makemkvcon"
-
-    monkeypatch.setattr(config, "find_binary", fake_find_binary)
-    monkeypatch.setattr(config, "makemkv_candidates", lambda: ["C1", "C2"])
-    monkeypatch.setattr(config, "handbrake_candidates", lambda: ["H1"])
-
-    assert jobs._resolve_binary("makemkvcon", "") == "/found/makemkvcon"
-    assert seen["candidates"] == ["C1", "C2"]
-
-    assert jobs._resolve_binary("HandBrakeCLI", "") == "/found/makemkvcon"
-    assert seen["candidates"] == ["H1"]
-
-
-def test_default_stages_pass_min_title_seconds(monkeypatch, tmp_path):
-    """cfg.min_title_seconds must reach makemkv.rip as minlength=."""
-    import threading
-
-    from app import jobs, makemkv
-
-    captured = {}
-
-    def fake_rip(mk_path, drive_id, title, out_dir, emit, cancel,
-                 minlength=None):
-        captured["minlength"] = minlength
-        return tmp_path / "out.mkv"
-
-    monkeypatch.setattr(makemkv, "rip", fake_rip)
-    monkeypatch.setattr(jobs, "_resolve_binary",
-                        lambda name, configured: f"/fake/{name}")
-
-    cfg = SimpleNamespace(
-        makemkv_path="", handbrake_path="",
-        webdav_url="https://nas.example/dav/files/u/movies",
-        webdav_user="u", webdav_password="p",
-        min_title_seconds=321,
-    )
-    stages = jobs._default_stages(cfg)
-    stages.rip("disc:0", 1, tmp_path, lambda ev: None, threading.Event())
-    assert captured["minlength"] == 321
-
-
-def test_has_active_duplicate(tmp_path):
-    """Double-submit guard: same drive + titles while non-terminal."""
+def test_job_serializes_targets_and_display_title(tmp_path):
     fake = FakeStages()
     cfg = make_cfg(tmp_path)
     mgr = JobManager(cfg_getter=lambda: cfg, stages=fake.funcs())
-    # Worker NOT started: the job stays queued (non-terminal) forever.
-    job = mgr.create_job(drive="disc:0", title_indices=[1, 3], tmdb_id=None,
-                         movie_title="Dup", year=None, profile="hevc")
+    job = mgr.create_job(drive="D:\\", targets=[movie_target(2, "N")], tmdb_id=5,
+                         display_title="Name", year=2001, profile="hevc")
+    data = job.serialize()
+    assert data["drive"] == "D:\\"
+    assert data["display_title"] == "Name"
+    assert data["targets"] == [{"title_index": 2, "relpath": "Movies/N/N.mkv"}]
 
-    assert mgr.has_active_duplicate("disc:0", [3, 1]) is True   # order-free
-    assert mgr.has_active_duplicate("disc:0", [1]) is False     # different set
-    assert mgr.has_active_duplicate("disc:1", [1, 3]) is False  # different drive
 
-    mgr.cancel(job.id)  # -> CANCELLED (terminal)
-    assert mgr.has_active_duplicate("disc:0", [1, 3]) is False
+# ------------------------------------------------------------------ wiring
+
+
+def test_default_stages_bind_handbrake_and_the_destination(monkeypatch, tmp_path):
+    """_default_stages must wire handbrake.encode and destination.for_config."""
+    from app import destination, handbrake, jobs
+
+    captured = {}
+
+    def fake_encode(hb_path, source, title_index, dst, profile, quality, emit, cancel):
+        captured["hb_path"] = hb_path
+        captured["source"] = source
+        captured["title_index"] = title_index
+        return dst
+
+    class FakeDest:
+        def send(self, local, rel_dest, emit, cancel, job_id):
+            captured["sent"] = rel_dest
+
+    monkeypatch.setattr(handbrake, "encode", fake_encode)
+    monkeypatch.setattr(destination, "for_config", lambda cfg: FakeDest())
+    monkeypatch.setattr(jobs, "_resolve_handbrake", lambda cfg: "/fake/HandBrakeCLI")
+
+    stages = jobs._default_stages(make_cfg(tmp_path))
+    stages.encode("/dev/sr0", 3, tmp_path / "o.mkv", "hevc", 22,
+                  lambda ev: None, threading.Event())
+    stages.send(tmp_path / "o.mkv", "Movies/A/A.mkv", lambda ev: None,
+                threading.Event(), "job1")
+
+    assert captured["hb_path"] == "/fake/HandBrakeCLI"
+    assert captured["source"] == "/dev/sr0"
+    assert captured["title_index"] == 3
+    assert captured["sent"] == "Movies/A/A.mkv"
+
+
+def test_resolve_handbrake_delegates_to_config(monkeypatch, tmp_path):
+    from app import config, jobs
+
+    monkeypatch.setattr(config, "resolve_binaries", lambda cfg: "/found/HandBrakeCLI")
+    assert jobs._resolve_handbrake(make_cfg(tmp_path)) == "/found/HandBrakeCLI"
+
+
+def test_has_active_duplicate(tmp_path):
+    """Double-submit guard: same drive + title set while non-terminal."""
+    fake = FakeStages()
+    cfg = make_cfg(tmp_path)
+    mgr = JobManager(cfg_getter=lambda: cfg, stages=fake.funcs())
+    targets = [movie_target(1, "A"), movie_target(3, "B")]
+    mgr.create_job(drive="/dev/sr0", targets=targets, tmdb_id=None,
+                   display_title="Dup", year=None, profile="hevc")
+
+    assert mgr.has_active_duplicate("/dev/sr0", [3, 1]) is True
+    assert mgr.has_active_duplicate("/dev/sr0", [1]) is False
+    assert mgr.has_active_duplicate("/dev/sr1", [1, 3]) is False
