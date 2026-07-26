@@ -1,0 +1,17 @@
+[18:41:55] hb_init: starting libhb thread
+[18:41:55] thread 7f8c4c started ("work")
+Scanning title 1 of 1, preview 2, 20.00 %
+Scanning title 1 of 1, preview 5, 50.00 %
+Scanning title 1 of 1, preview 10, 100.00 %
+[18:41:57] scan: 10 previews, 1920x1080, 23.976 fps, autocrop = 0/0/0/0, aspect 16:9, PAR 1:1, color profile: 1-1-1
+[18:41:57] libhb: scan thread found 1 valid title(s)
+Encoding: task 1 of 1, 0.00 %
+Encoding: task 1 of 1, 5.84 %
+Encoding: task 1 of 1, 12.40 % (71.22 fps, avg 69.10 fps, ETA 00h11m42s)
+Encoding: task 1 of 1, 68.13 % (59.39 fps, avg 65.74 fps, ETA 00h00m02s)
+Encoding: task 1 of 1, 99.96 % (61.05 fps, avg 66.20 fps, ETA 00h00m00s)
+Muxing: this may take awhile...
+Muxing: task 1 of 1, 100.00 %
+[18:53:40] work: average encoding speed for job is 66.198712 fps
+[18:53:40] mux: track 0, 135000 frames, 612345678 bytes, 4389.12 kbps, fifo 2048
+Encode done!

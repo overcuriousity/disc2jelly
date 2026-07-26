@@ -1,0 +1,7 @@
+MSG:1005,0,1,"MakeMKV v1.18.1 linux(x64-release) started","%1 started","MakeMKV v1.18.1 linux(x64-release)"
+DRV:0,0,999,0,"BD-RE PIONEER BD-RW   BDR-X13 1.04 DEDL301260UC","","/dev/sr2"
+DRV:1,2,999,1,"BD-RE HL-DT-ST BD-RE  WH16NS60 1.03 M63IBOA5100","BUILD","/dev/sr0"
+DRV:2,0,999,0,"DVD+R-DL HL-DT-ST DVDRAM GUE0N T.02 KWAJ7AC1833","","/dev/sr1"
+DRV:3,256,999,0,"","",""
+MSG:5010,0,0,"Failed to open disc","Failed to open disc"
+TCOUNT:0

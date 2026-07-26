@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Disc2Jelly</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- 1 · Status bar ------------------------------------------------------ -->
+  <header class="statusbar">
+    <h1 class="brand">Disc2Jelly</h1>
+    <div class="health" id="health">
+      <span class="dot-wrap" title="Disc ripper program (MakeMKV)">
+        <span class="dot" id="dot-makemkv"></span>Disc ripper</span>
+      <span class="dot-wrap" title="Movie shrinker program (HandBrake)">
+        <span class="dot" id="dot-handbrake"></span>Movie shrinker</span>
+      <span class="dot-wrap" title="Server connection (WebDAV)">
+        <span class="dot" id="dot-webdav"></span>Server</span>
+      <span class="dot-wrap" title="Movie look-up (TMDb)">
+        <span class="dot" id="dot-tmdb"></span>Movie look-up</span>
+    </div>
+    <button class="icon-btn" id="settings-btn" aria-label="Settings" title="Settings">⚙</button>
+  </header>
+
+  <main>
+    <!-- 2 · Disc panel ---------------------------------------------------- -->
+    <section class="card" id="disc-panel">
+      <div class="panel-head">
+        <h2>Disc</h2>
+        <button class="btn" id="rescan-btn">Look for a disc</button>
+      </div>
+      <p class="muted" id="disc-status">Looking for a disc…</p>
+
+      <div id="disc-found" hidden>
+        <p class="disc-label">Found: <strong id="disc-label"></strong></p>
+
+        <div class="field" id="drive-field" hidden>
+          <label for="drive-select">Drive</label>
+          <select id="drive-select"></select>
+        </div>
+
+        <div class="field">
+          <label for="title-select">Movie on the disc</label>
+          <select id="title-select"></select>
+        </div>
+
+        <details id="extras-details">
+          <summary>Also copy extra videos from this disc</summary>
+          <div id="extras-list" class="extras-list"></div>
+        </details>
+
+        <!-- TMDb suggestion -->
+        <div class="suggestion" id="suggestion" hidden>
+          <p class="suggestion-text">We think this is:<br>
+            <strong id="suggestion-title"></strong></p>
+          <div class="row">
+            <button class="btn btn-accent" id="suggestion-use">Use this</button>
+            <button class="btn" id="suggestion-other">Search for another</button>
+          </div>
+        </div>
+
+        <div class="field" id="movie-search-field" hidden>
+          <label for="movie-search">Search for the movie</label>
+          <div class="row">
+            <input type="text" id="movie-search" placeholder="Movie name">
+            <button class="btn" id="movie-search-btn">Search</button>
+          </div>
+          <ul class="search-results" id="search-results"></ul>
+        </div>
+
+        <p class="chosen" id="chosen-movie" hidden></p>
+
+        <details id="manual-details">
+          <summary>Type the movie name by hand</summary>
+          <div class="field">
+            <label for="manual-title">Movie name</label>
+            <input type="text" id="manual-title" placeholder="e.g. The Matrix">
+          </div>
+          <div class="field">
+            <label for="manual-year">Year (optional)</label>
+            <input type="number" id="manual-year" min="1900" max="2100" placeholder="e.g. 1999">
+          </div>
+          <button class="btn" id="manual-apply">Use this name</button>
+        </details>
+
+        <div class="field">
+          <label for="profile-select">File type</label>
+          <select id="profile-select">
+            <option value="hevc" selected>Smaller file (HEVC)</option>
+            <option value="h264">Maximum compatibility (H.264)</option>
+          </select>
+        </div>
+
+        <button class="btn btn-big" id="rip-btn" disabled>RIP &amp; UPLOAD</button>
+        <p class="muted" id="rip-hint">Pick the movie above, then press the big button.</p>
+      </div>
+    </section>
+
+    <!-- 3 · Queue panel --------------------------------------------------- -->
+    <section class="card" id="queue-panel">
+      <div class="panel-head"><h2>Queue</h2></div>
+      <p class="muted" id="queue-empty">Nothing waiting. Insert a disc to begin.</p>
+      <div id="job-list"></div>
+    </section>
+
+    <!-- 4 · Log pane ------------------------------------------------------ -->
+    <details class="card log-pane" id="log-pane">
+      <summary>Technical log</summary>
+      <pre id="log-lines"></pre>
+    </details>
+  </main>
+
+  <!-- Settings modal ------------------------------------------------------ -->
+  <div class="modal-backdrop" id="settings-modal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="settings-title">
+      <h2 id="settings-title">Settings</h2>
+
+      <div class="field">
+        <label for="cfg-webdav-url">Server address (WebDAV)</label>
+        <input type="text" id="cfg-webdav-url" placeholder="https://nas.example/remote.php/dav/files/me/movies-inbox">
+      </div>
+      <div class="field">
+        <label for="cfg-webdav-user">Server user name</label>
+        <input type="text" id="cfg-webdav-user" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="cfg-webdav-password">Server password</label>
+        <input type="password" id="cfg-webdav-password" autocomplete="current-password">
+      </div>
+      <div class="row">
+        <button class="btn" id="test-webdav-btn">Test server connection</button>
+        <span class="muted" id="test-webdav-result"></span>
+      </div>
+      <div class="field">
+        <label for="cfg-tmdb-key">Movie look-up key (TMDb API key)</label>
+        <input type="text" id="cfg-tmdb-key">
+      </div>
+
+      <details>
+        <summary>Advanced</summary>
+        <div class="field">
+          <label for="cfg-temp-dir">Temporary work folder</label>
+          <input type="text" id="cfg-temp-dir" placeholder="leave empty for default">
+        </div>
+        <div class="field checkbox">
+          <label><input type="checkbox" id="cfg-keep-mkv"> Keep the large intermediate file (uses lots of disk)</label>
+        </div>
+        <div class="field">
+          <label for="cfg-encoder">Default file type</label>
+          <select id="cfg-encoder">
+            <option value="hevc">Smaller file (HEVC)</option>
+            <option value="h264">Maximum compatibility (H.264)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cfg-hevc-quality">HEVC quality (lower = better, 0–63)</label>
+          <input type="number" id="cfg-hevc-quality" min="0" max="63">
+        </div>
+        <div class="field">
+          <label for="cfg-h264-quality">H.264 quality (lower = better, 0–63)</label>
+          <input type="number" id="cfg-h264-quality" min="0" max="63">
+        </div>
+        <div class="field">
+          <label for="cfg-makemkv-path">MakeMKV program location (optional)</label>
+          <input type="text" id="cfg-makemkv-path" placeholder="auto-detect">
+        </div>
+        <div class="field">
+          <label for="cfg-handbrake-path">HandBrake program location (optional)</label>
+          <input type="text" id="cfg-handbrake-path" placeholder="auto-detect">
+        </div>
+        <div class="field">
+          <label for="cfg-min-title">Ignore videos shorter than (seconds)</label>
+          <input type="number" id="cfg-min-title" min="0">
+        </div>
+      </details>
+
+      <p class="form-errors" id="settings-errors"></p>
+      <div class="row modal-actions">
+        <button class="btn btn-accent" id="settings-save">Save</button>
+        <button class="btn" id="settings-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

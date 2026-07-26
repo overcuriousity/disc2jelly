@@ -1,0 +1,19 @@
+MSG:1005,0,1,"MakeMKV v1.18.1 linux(x64-release) started","%1 started","MakeMKV v1.18.1 linux(x64-release)"
+MSG:3007,0,0,"Using direct disc access mode","Using direct disc access mode"
+MSG:3307,16777216,2,"File 00381.m2ts was added as title #18","File %1 was added as title #%2","00381.m2ts","18"
+MSG:3025,0,3,"Title #00384.m2ts has length of 5 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00384.m2ts","5","120"
+PRGT:5018,0,"Saving all titles to MKV files"
+PRGC:5015,1,"Saving 1 titles into directory /tmp/work"
+PRGV:0,0,65536
+PRGV:0,0,65536
+PRGV:730,0,65536
+PRGV:730,730,65536
+PRGV:857,730,65536
+PRGV:857,858,65536
+PRGV:1200,1500,65536
+PRGV:0,3276,65536
+PRGV:400,3276,65536
+PRGV:900,32768,65536
+PRGV:1500,65536,65536
+MSG:5005,0,0,"1 titles saved","%1 titles saved","1"
+MSG:5036,260,1,"Copy complete. 1 titles saved.","Copy complete. %1 titles saved.","1"
