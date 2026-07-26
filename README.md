@@ -1,5 +1,9 @@
 # Disc2Jelly
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#requirements)
+
 One-click DVD & Blu-ray → Jellyfin ingest. Insert disc → confirm the detected movie → press **RIP & UPLOAD**. The app rips with MakeMKV, encodes with HandBrake (HEVC by default), names everything exactly the way Jellyfin wants it, and uploads to your WebDAV share. Local web UI — identical on Windows and Linux.
 
 ```
