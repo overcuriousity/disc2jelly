@@ -281,6 +281,51 @@ def test_series_job_requires_episodes(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_series_job_rejects_a_repeated_episode_number(monkeypatch):
+    """Two titles on the same slot would silently overwrite each other."""
+    _fresh_manager(monkeypatch)
+    monkeypatch.setattr(main, "_load_config", lambda: _cfg())
+    resp = TestClient(main.app).post("/api/jobs", json={
+        "drive": "/dev/sr0", "kind": "series", "title": "Breaking Bad",
+        "year": 2008, "tmdb_id": 1396,
+        "episodes": [
+            {"title_index": 1, "season": 1, "episode": 3, "name": "A"},
+            {"title_index": 2, "season": 1, "episode": 3, "name": "B"},
+        ],
+    })
+    assert resp.status_code == 400
+    assert "assigned twice" in resp.json()["error"]
+
+
+def test_series_job_allows_one_title_in_two_episode_slots(monkeypatch):
+    """A double-length title legitimately covers two episodes."""
+    _fresh_manager(monkeypatch)
+    monkeypatch.setattr(main, "_load_config", lambda: _cfg())
+    resp = TestClient(main.app).post("/api/jobs", json={
+        "drive": "/dev/sr0", "kind": "series", "title": "Breaking Bad",
+        "year": 2008, "tmdb_id": 1396,
+        "episodes": [
+            {"title_index": 4, "season": 1, "episode": 1, "name": "A"},
+            {"title_index": 4, "season": 1, "episode": 2, "name": "B"},
+        ],
+    })
+    assert resp.status_code == 201
+
+
+def test_series_job_allows_the_same_number_in_different_seasons(monkeypatch):
+    _fresh_manager(monkeypatch)
+    monkeypatch.setattr(main, "_load_config", lambda: _cfg())
+    resp = TestClient(main.app).post("/api/jobs", json={
+        "drive": "/dev/sr0", "kind": "series", "title": "Breaking Bad",
+        "year": 2008, "tmdb_id": 1396,
+        "episodes": [
+            {"title_index": 1, "season": 1, "episode": 1, "name": "A"},
+            {"title_index": 2, "season": 2, "episode": 1, "name": "B"},
+        ],
+    })
+    assert resp.status_code == 201
+
+
 def test_health_reports_handbrake_and_destination(monkeypatch):
     monkeypatch.setattr(main, "_load_config",
                         lambda: _cfg(destination_kind="local", local_path="/tmp/x"))

@@ -254,25 +254,42 @@ def _build_targets(body: JobCreate) -> list:
     from .jobs import TitleTarget
 
     title = body.title.strip()
+    targets = []
     if body.kind == "series":
-        return [
-            TitleTarget(
+        # Episode numbers come from editable inputs in the UI, so two rows can
+        # carry the same one. That yields one relpath for two encodes and the
+        # second silently overwrites the first — refuse instead. Duplicate
+        # title_index is fine: the same disc title can legitimately be sent to
+        # two episode slots.
+        seen: set[tuple[int, int]] = set()
+        for ep in body.episodes:
+            slot = (ep.season, ep.episode)
+            if slot in seen:
+                raise ValueError(
+                    f"Season {ep.season} episode {ep.episode} is assigned twice; "
+                    "give each ticked title its own episode number"
+                )
+            seen.add(slot)
+            targets.append(TitleTarget(
                 title_index=ep.title_index,
                 relpath=metadata.jellyfin_episode_relpath(
                     series=title, year=body.year, tmdb_id=body.tmdb_id,
                     season=ep.season, episode=ep.episode, ep_title=ep.name,
                 ).as_posix(),
-            )
-            for ep in body.episodes
-        ]
+            ))
+    else:
+        base = metadata.jellyfin_movie_relpath(title, body.year, body.tmdb_id)
+        for i, index in enumerate(body.titles, start=1):
+            # Extra titles (bonus features) share the movie folder under a
+            # disambiguated name so Jellyfin still matches the main feature.
+            rel = base if i == 1 else base.parent / f"{base.stem} - Title {i}{base.suffix}"
+            targets.append(TitleTarget(title_index=index, relpath=rel.as_posix()))
 
-    base = metadata.jellyfin_movie_relpath(title, body.year, body.tmdb_id)
-    targets = []
-    for i, index in enumerate(body.titles, start=1):
-        # Extra titles (bonus features) share the movie folder under a
-        # disambiguated name so Jellyfin still matches the main feature.
-        rel = base if i == 1 else base.parent / f"{base.stem} - Title {i}{base.suffix}"
-        targets.append(TitleTarget(title_index=index, relpath=rel.as_posix()))
+    # Belt and braces: whatever the naming rules do, two targets must never
+    # resolve to the same file.
+    paths = [t.relpath for t in targets]
+    if len(set(paths)) != len(paths):
+        raise ValueError("Two titles would be written to the same file")
     return targets
 
 
