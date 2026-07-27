@@ -5,8 +5,9 @@ Currently just HandBrakeCLI: GPLv2, redistributable, and invoked as a separate
 process so there is no linking concern with Disc2Jelly's own GPL-3.0. Its
 COPYING file is shipped alongside.
 
-libdvdcss is deliberately NOT fetched here — it is downloaded by the app on
-the user's own machine on first run (see disc2jelly/app/dvdcss.py).
+libdvdcss is deliberately NOT fetched here, and cannot be: VideoLAN publishes
+it as source only. The user installs it themselves; the app detects it and
+explains how (see disc2jelly/app/dvdcss.py).
 
 Downloads are refused unless the archive matches a pinned SHA-256. To pin a
 new release, bump VERSION and run:
@@ -91,15 +92,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.print_hashes:
         print(f"\nHANDBRAKE_SHA256 = \"{hashlib.sha256(payload).hexdigest()}\"")
-        print("\nAlso pin libdvdcss in disc2jelly/app/dvdcss.py:")
-        from urllib.request import urlopen  # noqa: PLC0415 - only needed here
-
-        sys.path.insert(0, str(REPO_ROOT / "disc2jelly"))
-        from app import dvdcss  # noqa: PLC0415
-
-        with urlopen(dvdcss.DOWNLOAD_URL, timeout=TIMEOUT_S) as resp:
-            dll = resp.read()
-        print(f"EXPECTED_SHA256 = \"{hashlib.sha256(dll).hexdigest()}\"")
         return 0
 
     verify(payload, HANDBRAKE_SHA256, "HandBrakeCLI archive", args.allow_unpinned)

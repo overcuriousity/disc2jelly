@@ -1,144 +1,110 @@
-"""Tests for disc2jelly.app.dvdcss (first-run libdvdcss acquisition)."""
+"""Tests for disc2jelly.app.dvdcss (libdvdcss detection and guidance).
+
+There is no acquisition path to test: VideoLAN publishes libdvdcss as source
+tarballs only, so the module detects and explains but never installs. An
+earlier version downloaded from a win64/ URL that has never existed.
+"""
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pytest
 
 from app import dvdcss
-from app.dvdcss import DvdCssError, ensure_libdvdcss
-
-PAYLOAD = b"MZ fake libdvdcss-2.dll payload"
-PAYLOAD_SHA = hashlib.sha256(PAYLOAD).hexdigest()
-
-
-def _fake_fetch(payload: bytes = PAYLOAD):
-    calls: list[str] = []
-
-    def fetch(url: str) -> bytes:
-        calls.append(url)
-        return payload
-
-    fetch.calls = calls  # type: ignore[attr-defined]
-    return fetch
-
-
-def _collect() -> tuple[list[dict], object]:
-    events: list[dict] = []
-    return events, events.append
+from app.dvdcss import DvdCssError
 
 
 @pytest.fixture
 def windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exercise the Windows download path from any host platform."""
+    """Exercise the Windows path from any host platform."""
     monkeypatch.setattr(dvdcss.sys, "platform", "win32")
 
 
-# --- already present --------------------------------------------------------
+@pytest.fixture
+def linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dvdcss.sys, "platform", "linux")
 
 
-def test_returns_the_existing_dll_without_downloading(windows, tmp_path: Path) -> None:
-    existing = tmp_path / dvdcss.DLL_NAME
-    existing.write_bytes(PAYLOAD)
-    fetch = _fake_fetch()
-    _, emit = _collect()
-
-    result = ensure_libdvdcss(tmp_path, emit, fetch=fetch)
-
-    assert result == existing
-    assert fetch.calls == []
+# --- Windows ----------------------------------------------------------------
 
 
-# --- download ---------------------------------------------------------------
+def test_windows_dll_present_in_the_bundled_dir(windows, tmp_path: Path) -> None:
+    (tmp_path / dvdcss.DLL_NAME).write_bytes(b"MZ")
+    assert dvdcss.is_available(tmp_path) is True
+    dvdcss.require(tmp_path)  # must not raise
 
 
-def test_downloads_and_installs_when_missing(windows, tmp_path: Path) -> None:
-    fetch = _fake_fetch()
-    _, emit = _collect()
-
-    result = ensure_libdvdcss(tmp_path, emit, fetch=fetch)
-
-    assert result == tmp_path / dvdcss.DLL_NAME
-    assert result.read_bytes() == PAYLOAD
-    assert fetch.calls == [dvdcss.DOWNLOAD_URL]
-    assert dvdcss.DOWNLOAD_URL.startswith("https://")
+def test_windows_dll_absent(windows, tmp_path: Path) -> None:
+    assert dvdcss.is_available(tmp_path) is False
 
 
-def test_creates_the_destination_directory(windows, tmp_path: Path) -> None:
-    dest = tmp_path / "vendor" / "nested"
-    _, emit = _collect()
-    ensure_libdvdcss(dest, emit, fetch=_fake_fetch())
-    assert (dest / dvdcss.DLL_NAME).is_file()
+def test_windows_hint_names_the_exact_folder(windows, tmp_path: Path) -> None:
+    hint = dvdcss.hint(tmp_path)
+    assert str(tmp_path) in hint
+    assert dvdcss.DLL_NAME in hint
 
 
-def test_emits_a_visible_notice_before_downloading(windows, tmp_path: Path) -> None:
-    events, emit = _collect()
-    ensure_libdvdcss(tmp_path, emit, fetch=_fake_fetch())
-    assert events, "the download must not be silent"
-    assert any("libdvdcss" in e["detail"] for e in events)
-    assert events[-1]["status"] == "done"
+def test_windows_without_a_bundled_dir_is_unavailable(windows) -> None:
+    assert dvdcss.is_available(None) is False
+    assert "Disc2Jelly folder" in dvdcss.hint(None)
 
 
-def test_network_failure_raises(windows, tmp_path: Path) -> None:
-    def boom(url: str) -> bytes:
-        raise OSError("dns failure")
-
-    _, emit = _collect()
-    with pytest.raises(DvdCssError, match="dns failure"):
-        ensure_libdvdcss(tmp_path, emit, fetch=boom)
-    assert not (tmp_path / dvdcss.DLL_NAME).exists()
+def test_windows_require_raises_with_the_guidance(windows, tmp_path: Path) -> None:
+    with pytest.raises(DvdCssError) as excinfo:
+        dvdcss.require(tmp_path)
+    assert str(tmp_path) in str(excinfo.value)
 
 
-# --- checksum pinning -------------------------------------------------------
-
-
-def test_pinned_checksum_match_installs(
-    windows, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(dvdcss, "EXPECTED_SHA256", PAYLOAD_SHA)
-    _, emit = _collect()
-    assert ensure_libdvdcss(tmp_path, emit, fetch=_fake_fetch()).is_file()
-
-
-def test_pinned_checksum_mismatch_refuses_and_leaves_nothing(
-    windows, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(dvdcss, "EXPECTED_SHA256", "0" * 64)
-    _, emit = _collect()
-    with pytest.raises(DvdCssError, match="checksum"):
-        ensure_libdvdcss(tmp_path, emit, fetch=_fake_fetch())
-    assert not (tmp_path / dvdcss.DLL_NAME).exists()
-
-
-def test_unpinned_download_warns(
-    windows, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """With no pinned hash the download is HTTPS-trust only — say so."""
-    monkeypatch.setattr(dvdcss, "EXPECTED_SHA256", "")
-    events, emit = _collect()
-    ensure_libdvdcss(tmp_path, emit, fetch=_fake_fetch())
-    assert any("not pinned" in e["detail"].lower() for e in events)
+def test_windows_does_not_consult_the_system_loader(
+        windows, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """find_library("dvdcss") is meaningless for the bundled Windows layout."""
+    monkeypatch.setattr(dvdcss, "_find_system_library", lambda: "/usr/lib/libdvdcss.so.2")
+    assert dvdcss.is_available(tmp_path) is False
 
 
 # --- Linux ------------------------------------------------------------------
 
 
-def test_linux_reports_the_system_library_when_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(dvdcss.sys, "platform", "linux")
+def test_linux_uses_the_system_library(
+        linux, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dvdcss, "_find_system_library", lambda: "libdvdcss.so.2")
-    _, emit = _collect()
-    assert ensure_libdvdcss(None, emit) is None
+    assert dvdcss.is_available() is True
+    dvdcss.require()  # must not raise
 
 
-def test_linux_without_the_library_raises_with_an_install_hint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(dvdcss.sys, "platform", "linux")
+def test_linux_missing_library_gives_the_package_hint(
+        linux, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dvdcss, "_find_system_library", lambda: None)
-    _, emit = _collect()
-    with pytest.raises(DvdCssError, match="libdvdcss"):
-        ensure_libdvdcss(None, emit)
+    assert dvdcss.is_available() is False
+    with pytest.raises(DvdCssError) as excinfo:
+        dvdcss.require()
+    assert "libdvd-pkg" in str(excinfo.value)
+    assert "RPM Fusion" in str(excinfo.value)
+
+
+def test_linux_ignores_the_bundled_dir(
+        linux, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A stray DLL in vendor/ must not make Linux think it is set up."""
+    monkeypatch.setattr(dvdcss, "_find_system_library", lambda: None)
+    (tmp_path / dvdcss.DLL_NAME).write_bytes(b"MZ")
+    assert dvdcss.is_available(tmp_path) is False
+
+
+# --- contract ---------------------------------------------------------------
+
+
+def test_is_available_never_raises(
+        windows, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(dvdcss, "Path", boom)
+    assert dvdcss.is_available("anywhere") is False
+
+
+def test_no_download_surface_remains() -> None:
+    """Guards against reintroducing the 404 URL."""
+    for gone in ("DOWNLOAD_URL", "EXPECTED_SHA256", "ensure_libdvdcss",
+                 "_https_fetch", "LIBDVDCSS_VERSION"):
+        assert not hasattr(dvdcss, gone), f"{gone} should be gone"

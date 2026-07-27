@@ -58,7 +58,7 @@ async function refreshHealth() {
     setDot("dot-handbrake", h.binaries && h.binaries.handbrake);
     setDot("dot-destination", h.destination_ok === null ? null : h.destination_ok);
     setDot("dot-tmdb", h.tmdb_key_set ? true : null);
-    if (h.dvdcss_ok === false) await offerDvdCssInstall();
+    showDvdCssHint(h.dvdcss_ok === false ? (h.dvdcss_hint || "") : "");
   } catch (e) {
     ["dot-dvdcss", "dot-handbrake", "dot-destination", "dot-tmdb"]
       .forEach((id) => setDot(id, null));
@@ -283,22 +283,18 @@ async function applyDiscHint(label) {
 
 /* ------------------------------------------------------------- libdvdcss */
 
-let dvdcssPrompted = false;
-
-async function offerDvdCssInstall() {
-  if (dvdcssPrompted) return;
-  dvdcssPrompted = true;
-  const ok = confirm(
-    "Disc2Jelly needs libdvdcss to read encrypted DVDs.\n\n" +
-    "It is not shipped with this program. Download it now from VideoLAN?");
-  if (!ok) return;
-  try {
-    await api("/api/setup/libdvdcss", { method: "POST" });
-    log("libdvdcss installed.");
-    await refreshHealth();
-  } catch (e) {
-    alert("Could not install libdvdcss: " + e.message);
+/* There is no install button: VideoLAN publishes libdvdcss as source only,
+   so the app can explain what to do but never fetch it. The server sends the
+   platform-specific instructions, including the exact target folder. */
+function showDvdCssHint(hint) {
+  const banner = $("dvdcss-banner");
+  if (!banner) return;
+  if (!hint) {
+    banner.hidden = true;
+    return;
   }
+  banner.querySelector(".banner-text").textContent = hint;
+  banner.hidden = false;
 }
 
 /* --------------------------------------------------------- movie picking */

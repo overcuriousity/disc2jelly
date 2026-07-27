@@ -2,7 +2,7 @@
 
 **One-click DVD → Jellyfin ingest app, films and TV series.** Local Python app (FastAPI + vanilla-JS web UI), runs on Windows 10/11 and Linux. Detects an inserted disc, has HandBrake read and encode it in a single pass (HEVC default), names output per the Jellyfin movie/show spec via TMDb (manual fallback), writes to a local folder or WebDAV, cleans up temp files. Wife-proof UI with accurate per-stage progress bars.
 
-On Windows it ships as one Inno Setup installer with **zero separately-installed dependencies**: Python and HandBrakeCLI are bundled, libdvdcss is fetched from VideoLAN on first run.
+On Windows it ships as one Inno Setup installer that bundles Python and HandBrakeCLI. libdvdcss is the sole exception — it has no official binary distribution, so the user supplies it and the app explains how.
 
 ## Non-goals
 - **No Blu-ray.** AACS is an actively maintained revocation scheme plus the BD+ VM; no FOSS path works reliably and every working tool is proprietary and paid. DVD's CSS is cryptographically broken, so libdvdcss handles it with no key database. Supporting Blu-ray would reintroduce exactly the dependency this design exists to remove.
@@ -14,7 +14,7 @@ On Windows it ships as one Inno Setup installer with **zero separately-installed
 - Python ≥ 3.11. Dependencies (pinned in requirements.txt): `fastapi`, `uvicorn[standard]`, `requests`, `pytest` (dev). **No other deps.** Stdlib for everything else (subprocess, threading, queue, json, re, pathlib, urllib).
 - Frontend: single `static/index.html` + `static/app.js` + `static/style.css`. Vanilla JS, EventSource for SSE. No build step, no CDN.
 - External binaries: `HandBrakeCLI` (≥ 1.6) only — bundled by the Windows installer, distro package on Linux. Located via `config.handbrake_candidates()`, bundled copy first.
-- `libdvdcss` for CSS decryption: downloaded by the app on first run (Windows) or a distro package (Linux). Never redistributed in the installer — distributing a circumvention library is legally distinct from using one.
+- `libdvdcss` for CSS decryption: user-supplied DLL beside HandBrakeCLI (Windows) or a distro package (Linux). Detected, never installed — there is no official binary release, and not redistributing it also keeps distribution (legally distinct from use) off the table.
 - Build tooling (Windows only): PyInstaller (onedir) + Inno Setup 6.
 
 ## Repo layout
@@ -28,7 +28,7 @@ disc2jelly/
 │   ├── drives.py      # optical drive detection (OS-level, no binary)
 │   ├── scan.py        # title enumeration via HandBrake --scan --json
 │   ├── handbrake.py   # HandBrakeCLI wrapper + parser
-│   ├── dvdcss.py      # first-run libdvdcss acquisition
+│   ├── dvdcss.py      # libdvdcss detection + setup guidance
 │   ├── metadata.py    # TMDb movie + TV client, Jellyfin naming
 │   ├── destination.py # local folder / WebDAV output targets
 │   ├── webdav.py      # WebDAV upload (behind destination.py)
@@ -142,11 +142,13 @@ Titles with identical `(duration_s, chapters)` are **flagged via `duplicate_of`,
 
 ### libdvdcss (`dvdcss.py`)
 ```python
-def ensure_libdvdcss(dest_dir, emit, fetch=_https_fetch) -> Path|None
+def is_available(bundled_dir=None) -> bool
+def hint(bundled_dir=None) -> str
+def require(bundled_dir=None) -> None        # raises DvdCssError with the hint
 ```
-Windows: returns the existing `libdvdcss-2.dll` beside HandBrakeCLI, else downloads it from `download.videolan.org` over HTTPS, verifies `EXPECTED_SHA256` when pinned, and installs it atomically. Linux: reports the system library via `ctypes.util.find_library`, or raises with the distro package name — never downloads.
+Detection only — this module never installs anything. Windows: `libdvdcss-2.dll` beside HandBrakeCLI. Linux: the system library via `ctypes.util.find_library`. When it is missing, `hint()` returns platform-specific instructions naming the exact target folder, which `/api/health` passes to the UI banner.
 
-The download is always surfaced to the user, never silent, and an unpinned download emits an explicit warning event.
+**There is no acquisition path, by necessity, not just by policy.** VideoLAN publishes libdvdcss as source tarballs only; there is no `win64/` directory and never has been, and VLC's Windows build links libdvdcss statically into `libdvdread_plugin.dll` rather than shipping a standalone DLL. The user supplies the file. Not redistributing it also keeps the original legal position intact — distributing a circumvention library is legally distinct from using one.
 
 ### Destinations (`destination.py`)
 ```python
@@ -213,13 +215,12 @@ Pipeline per job (worker thread, sequential): RIP each selected title → ENCODE
 ```
 GET  /                       → static/index.html
 GET  /api/health             → {ok, binaries:{handbrake}, destination_ok, dvdcss_ok,
-                                tmdb_key_set, config_ok}
+                                dvdcss_hint, tmdb_key_set, config_ok}
 GET  /api/drives             → list[Drive] (rescans every call)
 GET  /api/titles?device=...  → list[Title]  (503 if HandBrakeCLI missing)
 GET  /api/disc/hint?label=   → DiscHint {kind, title, season, disc}
 GET  /api/tmdb/search?q=&kind=movie|tv → list[MovieMatch|ShowMatch]
 GET  /api/tmdb/tv/{id}/season/{n}      → list[EpisodeInfo]
-POST /api/setup/libdvdcss    → {ok, path}  (502 with a message on failure)
 GET  /api/jobs               → list of jobs + last events
 POST /api/jobs               → body {drive, kind, tmdb_id?, title, year?, profile,
                                 titles:[int]                       # kind=movie
@@ -235,7 +236,7 @@ Run: `python -m app.main` starts uvicorn on 127.0.0.1:8642 and opens browser.
 
 ### Frontend (static/) — wife-proof
 Sections top→bottom:
-1. **Status bar**: app health dots (libdvdcss ✓/✗, HandBrake ✓/✗, Destination ✓/✗, TMDb ✓/✗) + gear icon opening Settings modal. A red libdvdcss dot prompts the one-time download.
+1. **Status bar**: app health dots (libdvdcss ✓/✗, HandBrake ✓/✗, Destination ✓/✗, TMDb ✓/✗) + gear icon opening Settings modal. A red libdvdcss dot also shows a banner with `dvdcss_hint`, naming the folder the DLL belongs in.
 2. **Disc panel**: "Rescan" button; when disc found: disc label, a **film / TV episodes** toggle preselected from `/api/disc/hint`, then either the film title dropdown + extras, or the series episode table (one row per title: tick box, episode number, TMDb episode name; "Number them" fills sequentially from a starting number). TMDb suggestion card ("We think this is: **Title (Year)** — [Use] / [Search other]" with manual search box + fully manual title/year fields as fallback), profile select (HEVC default), big **"RIP & UPLOAD"** button.
 3. **Queue panel**: per job a card with movie name and 3 stacked progress bars (Rip / Encode / Upload) with % and fps/ETA on encode, status badge, cancel button, error text if failed.
 4. **Log pane** (collapsible): last 200 raw log lines.

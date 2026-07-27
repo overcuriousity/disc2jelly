@@ -12,7 +12,7 @@ DVD → HandBrake (decrypt via libdvdcss + encode, single pass, HEVC/H.264 MKV)
     → Jellyfin naming (TMDb film or series lookup) → folder or WebDAV → cleanup
 ```
 
-**On Windows there is nothing to install separately.** One `setup.exe` brings its own Python and HandBrake; libdvdcss is fetched once on first run.
+**On Windows one `setup.exe` brings its own Python and HandBrake.** The one thing it cannot bring is libdvdcss — see below.
 
 ### Why DVD only
 
@@ -20,7 +20,15 @@ Blu-ray is deliberately out of scope. AACS is an actively maintained broadcast-e
 
 ## Requirements
 
-**Windows:** none. Download the installer, run it, done.
+**Windows:** the installer covers everything except libdvdcss, which is required to read
+encrypted DVDs — that is, essentially every commercial disc. Put `libdvdcss-2.dll` next to
+`Disc2Jelly.exe` in the install folder and restart; the app shows the exact path when it is
+missing.
+
+It is not bundled, and cannot be downloaded automatically, because there is no official
+build to download: VideoLAN publishes libdvdcss as [source releases](https://download.videolan.org/pub/libdvdcss/)
+only, and VLC's own Windows build links it statically rather than shipping a standalone DLL.
+Build it from source, or copy the file from a player installation that already has one.
 
 **Linux** (runs from source):
 
@@ -57,13 +65,10 @@ powershell -ExecutionPolicy Bypass -File build\build_windows.ps1
 
 Needs [Inno Setup 6](https://jrsoftware.org/isdl.php). Output lands in `dist\`.
 
-Before a real build, pin the third-party checksums once:
-
-```powershell
-python build\fetch_deps.py --print-hashes
-```
-
-Paste the two digests into `build/fetch_deps.py` (`HANDBRAKE_SHA256`) and `disc2jelly/app/dvdcss.py` (`EXPECTED_SHA256`). Until you do, `fetch_deps.py` refuses to build and the libdvdcss download is trusted on HTTPS alone.
+HandBrakeCLI is pinned to a SHA-256 in `build/fetch_deps.py`, which refuses to build if the
+download does not match. To move to a new HandBrake release, bump `HANDBRAKE_VERSION`, run
+`python build\fetch_deps.py --print-hashes`, and paste the printed digest into
+`HANDBRAKE_SHA256`.
 
 ### A note on credentials
 
@@ -112,7 +117,7 @@ Titles the scanner detects as duplicates (DVDs routinely expose the main feature
 
 ## Troubleshooting
 
-- **Red "Disc reader" dot**: libdvdcss is missing. Windows: the app offers to download it — say yes. Linux: install your distro's `libdvdcss` package.
+- **Red "Disc reader" dot**: libdvdcss is missing, and the banner names the folder it belongs in. Windows: put `libdvdcss-2.dll` there and restart. Linux: install your distro's `libdvdcss` package.
 - **Red "Movie shrinker" dot**: HandBrakeCLI not found. Linux: install `handbrake-cli`, or set the path in Settings (`handbrake_path`).
 - **No disc found**: Linux — check the user can access the optical drive (`cdrom` group / udev rules).
 - **Upload fails with quota/auth errors**: check Settings → Test server connection; use an app password, not your main password.

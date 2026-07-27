@@ -10,7 +10,6 @@ import asyncio
 import dataclasses
 import json
 import queue
-import sys
 import threading
 import webbrowser
 from contextlib import asynccontextmanager
@@ -123,40 +122,30 @@ def health() -> dict:
         hb = None
     destination_ok = _check_destination(cfg)
     tmdb_key_set = bool(_tmdb_key(cfg))
-    dvdcss_ok = _dvdcss_present()
+    dvdcss_ok, dvdcss_hint = _dvdcss_state()
     ok = bool(hb) and dvdcss_ok and destination_ok is not False
     return {"ok": ok,
             "binaries": {"handbrake": bool(hb)},
             "destination_ok": destination_ok, "tmdb_key_set": tmdb_key_set,
-            "dvdcss_ok": dvdcss_ok, "config_ok": True}
+            "dvdcss_ok": dvdcss_ok, "dvdcss_hint": dvdcss_hint,
+            "config_ok": True}
 
 
-def _dvdcss_present() -> bool:
-    """Is CSS decryption available? Without it, encrypted DVDs cannot be read."""
+def _dvdcss_state() -> tuple[bool, str]:
+    """Is CSS decryption available, and if not, what should the user do?
+
+    There is no install path: VideoLAN ships libdvdcss as source only, so the
+    app can report and explain but never fetch. See app/dvdcss.py.
+    """
     try:
         from . import dvdcss  # lazy
 
-        if sys.platform.startswith("win"):
-            return (_config_module().bundled_dir() / dvdcss.DLL_NAME).is_file()
-        return dvdcss._find_system_library() is not None
-    except Exception:
-        return False
-
-
-@app.post("/api/setup/libdvdcss")
-def setup_libdvdcss():
-    """Fetch libdvdcss on first run (Windows). Surfaced, never silent."""
-    from . import dvdcss  # lazy
-
-    try:
-        path = dvdcss.ensure_libdvdcss(
-            _config_module().bundled_dir(), manager.publish
-        )
-    except dvdcss.DvdCssError as exc:
-        return _err(str(exc), 502)
+        bundled = _config_module().bundled_dir()
+        if dvdcss.is_available(bundled):
+            return True, ""
+        return False, dvdcss.hint(bundled)
     except Exception as exc:
-        return _err(f"libdvdcss setup failed: {exc}", 502)
-    return {"ok": True, "path": str(path) if path else None}
+        return False, f"Could not check for libdvdcss: {exc}"
 
 
 def _check_destination(cfg: Any) -> bool | None:

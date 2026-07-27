@@ -67,6 +67,22 @@ main {
 .dot.bad { background: var(--error); }
 .dot.unknown { background: var(--warn); }
 
+/* ---- banner ------------------------------------------------------------ */
+/* Setup guidance the user must act on, e.g. a missing libdvdcss. The text
+   arrives from the server and carries newlines, so preserve them. */
+.banner {
+  background: var(--surface);
+  border: 1px solid var(--warn);
+  border-left: 4px solid var(--warn);
+  border-radius: 12px;
+  padding: 16px 20px;
+}
+.banner-text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
 /* ---- cards & panels ---------------------------------------------------- */
 .card {
   background: var(--surface);

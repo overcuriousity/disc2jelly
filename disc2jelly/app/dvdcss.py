@@ -1,41 +1,30 @@
-"""First-run acquisition of libdvdcss, the CSS decryption library.
+"""Detection of libdvdcss, the CSS decryption library.
 
-HandBrake reads a CSS-protected DVD only when libdvdcss is available. It is
-not bundled with the installer: distributing a circumvention library is a
+HandBrake reads a CSS-protected DVD only when libdvdcss is available. This
+module never installs it — it only reports whether it is there and, if not,
+tells the user exactly what to do.
+
+Not bundling it is deliberate: distributing a circumvention library is a
 different act, legally, from using one (§95a UrhG in Germany targets the
-distribution side most directly), so the user's own machine fetches it from
-VideoLAN on first run and the UI says so out loud.
+distribution side most directly). Downloading it on the user's behalf is not
+an option either, because there is nothing to download — VideoLAN publishes
+libdvdcss as source tarballs only, and VLC's own Windows build links it
+statically into libdvdread_plugin.dll rather than shipping a standalone DLL.
+An earlier version of this module fetched
+``.../pub/libdvdcss/<ver>/win64/libdvdcss-2.dll``, a path that has never
+existed and answered 404 on every call.
 
-Windows: download libdvdcss-2.dll next to HandBrakeCLI.exe.
-Linux:   detect the distro package; never download, just tell the user the
-         package name.
-
-Set EXPECTED_SHA256 to pin the download. Leave it empty and the transfer is
-trusted on HTTPS alone, which the caller is warned about.
+Windows: libdvdcss-2.dll must sit next to HandBrakeCLI.exe.
+Linux:   the distribution package provides it; check via ctypes.
 """
 
 from __future__ import annotations
 
-import hashlib
-import ssl
 import sys
-import time
-import urllib.request
 from ctypes.util import find_library
 from pathlib import Path
-from typing import Callable
 
 DLL_NAME = "libdvdcss-2.dll"
-LIBDVDCSS_VERSION = "1.4.3"
-DOWNLOAD_URL = (
-    f"https://download.videolan.org/pub/libdvdcss/{LIBDVDCSS_VERSION}/win64/{DLL_NAME}"
-)
-
-# Pin the release you ship against: build/fetch_deps.py --print-hashes prints it.
-# Empty means the download is trusted on HTTPS alone and the user is warned.
-EXPECTED_SHA256 = ""
-
-DOWNLOAD_TIMEOUT_S = 60
 
 LINUX_HINT = (
     "libdvdcss is not installed. Encrypted DVDs cannot be read without it. "
@@ -43,87 +32,46 @@ LINUX_HINT = (
     "libdvd-pkg; Fedora: libdvdcss from RPM Fusion) and restart Disc2Jelly."
 )
 
+WINDOWS_HINT = (
+    "libdvdcss is not installed. Encrypted DVDs — which means almost every "
+    "commercial disc — cannot be read without it.\n\n"
+    "Put {dll} in this folder:\n    {folder}\n\n"
+    "then restart Disc2Jelly. It is not shipped with this program and there "
+    "is no official download: build it from the source release at "
+    "https://download.videolan.org/pub/libdvdcss/ or copy the file from an "
+    "existing player installation that includes it."
+)
+
 
 class DvdCssError(Exception):
-    """Raised when libdvdcss is unavailable and cannot be installed."""
-
-
-def _event(status: str, detail: str) -> dict:
-    return {
-        "stage": "APP",
-        "status": status,
-        "percent": None,
-        "detail": detail,
-        "ts": time.time(),
-    }
+    """Raised when libdvdcss is unavailable."""
 
 
 def _find_system_library() -> str | None:
     return find_library("dvdcss")
 
 
-def _https_fetch(url: str) -> bytes:
-    context = ssl.create_default_context()
-    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S, context=context) as resp:
-        return resp.read()
+def is_available(bundled_dir: Path | str | None = None) -> bool:
+    """Is CSS decryption available? Never raises."""
+    try:
+        if sys.platform.startswith("win"):
+            if bundled_dir is None:
+                return False
+            return (Path(bundled_dir) / DLL_NAME).is_file()
+        return _find_system_library() is not None
+    except Exception:
+        return False
 
 
-def ensure_libdvdcss(
-    dest_dir: Path | str | None,
-    emit: Callable[[dict], None],
-    fetch: Callable[[str], bytes] = _https_fetch,
-) -> Path | None:
-    """Make libdvdcss available, downloading it on Windows if needed.
-
-    Returns the installed DLL path on Windows, or None on Linux where the
-    library is provided by the system. Raises DvdCssError if it cannot be
-    made available.
-    """
+def hint(bundled_dir: Path | str | None = None) -> str:
+    """What the user has to do to get libdvdcss, for this platform."""
     if not sys.platform.startswith("win"):
-        if _find_system_library():
-            return None
-        raise DvdCssError(LINUX_HINT)
+        return LINUX_HINT
+    folder = str(bundled_dir) if bundled_dir is not None else "the Disc2Jelly folder"
+    return WINDOWS_HINT.format(dll=DLL_NAME, folder=folder)
 
-    dest = Path(dest_dir) if dest_dir is not None else Path.cwd()
-    target = dest / DLL_NAME
-    if target.is_file():
-        return target
 
-    emit(_event(
-        "running",
-        f"Fetching libdvdcss {LIBDVDCSS_VERSION} from VideoLAN — needed once, "
-        "to read encrypted DVDs",
-    ))
-    if not EXPECTED_SHA256:
-        emit(_event(
-            "running",
-            "Note: this download is not pinned to a checksum; it is trusted "
-            "over HTTPS from download.videolan.org only",
-        ))
-
-    try:
-        payload = fetch(DOWNLOAD_URL)
-    except Exception as exc:
-        emit(_event("error", f"Could not download libdvdcss: {exc}"))
-        raise DvdCssError(f"Could not download libdvdcss: {exc}") from exc
-
-    if EXPECTED_SHA256:
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != EXPECTED_SHA256:
-            emit(_event("error", "libdvdcss checksum mismatch — refusing to install"))
-            raise DvdCssError(
-                f"libdvdcss checksum mismatch: expected {EXPECTED_SHA256}, got {digest}"
-            )
-
-    try:
-        dest.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".part")
-        tmp.write_bytes(payload)
-        tmp.replace(target)
-    except OSError as exc:
-        target.unlink(missing_ok=True)
-        emit(_event("error", f"Could not install libdvdcss: {exc}"))
-        raise DvdCssError(f"Could not install libdvdcss: {exc}") from exc
-
-    emit(_event("done", "libdvdcss installed — encrypted DVDs can now be read"))
-    return target
+def require(bundled_dir: Path | str | None = None) -> None:
+    """Raise DvdCssError with actionable guidance if libdvdcss is missing."""
+    if not is_available(bundled_dir):
+        raise DvdCssError(hint(bundled_dir))

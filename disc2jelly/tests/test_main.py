@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -290,53 +291,60 @@ def test_health_reports_handbrake_and_destination(monkeypatch):
     assert body["destination_ok"] is True
 
 
-# ------------------------------------------------------- libdvdcss first run
+# ------------------------------------------------------------------ libdvdcss
 
 
 def test_health_reports_libdvdcss_presence(monkeypatch):
     monkeypatch.setattr(main, "_load_config", lambda: _cfg())
     monkeypatch.setattr(main, "_find_handbrake", lambda cfg: "/usr/bin/HandBrakeCLI")
-    monkeypatch.setattr(main, "_dvdcss_present", lambda: False)
+    monkeypatch.setattr(main, "_dvdcss_state", lambda: (False, "put the DLL in X"))
     body = TestClient(main.app).get("/api/health").json()
     assert body["dvdcss_ok"] is False
+    assert body["dvdcss_hint"] == "put the DLL in X"
     assert body["ok"] is False  # encrypted DVDs cannot be read without it
 
 
-def test_install_libdvdcss_endpoint(monkeypatch):
-    from app import dvdcss
-
-    called = {}
-
-    def fake_ensure(dest, emit, **kw):
-        called["dest"] = dest
-        emit({"stage": "APP", "status": "done", "detail": "installed", "ts": 0})
-        return "C:/app/libdvdcss-2.dll"
-
+def test_health_carries_no_hint_when_libdvdcss_is_present(monkeypatch):
     monkeypatch.setattr(main, "_load_config", lambda: _cfg())
-    monkeypatch.setattr(dvdcss, "ensure_libdvdcss", fake_ensure)
+    monkeypatch.setattr(main, "_find_handbrake", lambda cfg: "/usr/bin/HandBrakeCLI")
+    monkeypatch.setattr(main, "_dvdcss_state", lambda: (True, ""))
+    body = TestClient(main.app).get("/api/health").json()
+    assert body["dvdcss_ok"] is True
+    assert body["dvdcss_hint"] == ""
+
+
+def test_there_is_no_libdvdcss_install_endpoint():
+    """VideoLAN ships source only, so the app can never fetch it."""
     resp = TestClient(main.app).post("/api/setup/libdvdcss")
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    assert called["dest"] is not None
+    assert resp.status_code == 404
 
 
-def test_install_libdvdcss_reports_failure(monkeypatch):
+def test_dvdcss_state_detects_the_system_library(monkeypatch):
+    """Regression: _dvdcss_state must not swallow a NameError and report False."""
     from app import dvdcss
 
-    def boom(dest, emit, **kw):
-        raise dvdcss.DvdCssError("no network")
-
-    monkeypatch.setattr(main, "_load_config", lambda: _cfg())
-    monkeypatch.setattr(dvdcss, "ensure_libdvdcss", boom)
-    resp = TestClient(main.app).post("/api/setup/libdvdcss")
-    assert resp.status_code == 502
-    assert "no network" in resp.json()["error"]
+    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None: True)
+    assert main._dvdcss_state() == (True, "")
 
 
-def test_dvdcss_present_detects_the_system_library(monkeypatch):
-    """Regression: _dvdcss_present must not swallow a NameError and report False."""
+def test_dvdcss_state_passes_the_bundled_dir_into_the_hint(monkeypatch):
+    from app import config, dvdcss
+
+    monkeypatch.setattr(config, "bundled_dir", lambda: Path("/opt/disc2jelly"))
+    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None: False)
+    monkeypatch.setattr(dvdcss, "hint", lambda bundled=None: f"folder={bundled}")
+    ok, hint = main._dvdcss_state()
+    assert ok is False
+    assert hint == "folder=/opt/disc2jelly"
+
+
+def test_dvdcss_state_survives_a_broken_backend(monkeypatch):
     from app import dvdcss
 
-    monkeypatch.setattr(main.sys, "platform", "linux")
-    monkeypatch.setattr(dvdcss, "_find_system_library", lambda: "libdvdcss.so.2")
-    assert main._dvdcss_present() is True
+    def boom(*_a, **_k):
+        raise RuntimeError("no ctypes")
+
+    monkeypatch.setattr(dvdcss, "is_available", boom)
+    ok, hint = main._dvdcss_state()
+    assert ok is False
+    assert "no ctypes" in hint
