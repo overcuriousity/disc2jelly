@@ -1,6 +1,6 @@
 """Where finished files go: a local/UNC folder, or a WebDAV share.
 
-The local target is the zero-config default — she picks a folder (including a
+The local target is the zero-config default — the user picks a folder (including a
 mapped network drive or \\\\nas\\share) and no URL, username or password is ever
 needed. WebDAV stays available for remote setups and keeps webdav.py's chunked
 upload logic untouched behind the same interface.
@@ -72,7 +72,10 @@ class LocalDestination:
         except OSError as exc:
             raise DestinationError(f"Cannot create {target.parent}: {exc}") from exc
 
-        total = src.stat().st_size
+        try:
+            total = src.stat().st_size
+        except OSError as exc:
+            raise DestinationError(f"Cannot read {src}: {exc}") from exc
         copied = 0
         last_event = 0
 

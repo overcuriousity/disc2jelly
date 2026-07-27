@@ -5,7 +5,7 @@
 # configures it in Settings after install.
 
 # Free key from https://www.themoviedb.org/settings/api (v3 key or v4 token).
-# Baked in so she never has to obtain one herself.
+# Baked in so the end user never has to obtain one themselves.
 tmdb_api_key = ""
 
 # "local" (a folder / mapped drive / UNC path) or "webdav".

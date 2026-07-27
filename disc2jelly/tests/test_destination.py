@@ -115,6 +115,16 @@ def test_local_rejects_a_relpath_escaping_the_root(tmp_path: Path) -> None:
         )
 
 
+def test_local_reports_a_missing_source_as_a_destination_error(tmp_path: Path) -> None:
+    """Every failure mode of send() must be a DestinationError, not a raw OSError."""
+    _, emit = _collect()
+    with pytest.raises(DestinationError) as excinfo:
+        LocalDestination(tmp_path / "out").send(
+            tmp_path / "gone.mkv", "Movies/X/X.mkv", emit, threading.Event(), "j"
+        )
+    assert "gone.mkv" in str(excinfo.value)
+
+
 def test_local_reports_the_target_path_in_its_final_event(tmp_path: Path) -> None:
     src = _source(tmp_path)
     events, emit = _collect()
