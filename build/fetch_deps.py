@@ -36,8 +36,13 @@ HANDBRAKE_URL = (
     f"https://github.com/HandBrake/HandBrake/releases/download/"
     f"{HANDBRAKE_VERSION}/HandBrakeCLI-{HANDBRAKE_VERSION}-win-x86_64.zip"
 )
-# Pin before shipping: python build/fetch_deps.py --print-hashes
-HANDBRAKE_SHA256 = ""
+# Re-pin after a version bump: python build/fetch_deps.py --print-hashes
+HANDBRAKE_SHA256 = "cc875eda177a4105b99664136719c893db989a4456c4d3a9fc9e8d8742018413"
+
+# GPLv2 licence texts inside the archive. HandBrakeCLI is redistributed by the
+# installer, so these have to travel with it. disc2jelly.spec collects them
+# from the vendor directory by these names.
+LICENCE_MEMBERS = {"doc/COPYING": "COPYING", "doc/LICENSE": "LICENSE"}
 
 TIMEOUT_S = 300
 
@@ -71,12 +76,28 @@ def verify(payload: bytes, expected: str, what: str, allow_unpinned: bool) -> No
 def install_handbrake(payload: bytes, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(BytesIO(payload)) as zf:
+        members = {n.lower(): n for n in zf.namelist()}
         names = [n for n in zf.namelist() if n.lower().endswith("handbrakecli.exe")]
         if not names:
             raise SystemExit("HandBrakeCLI.exe not found in the downloaded archive")
         target = dest / "HandBrakeCLI.exe"
         target.write_bytes(zf.read(names[0]))
-    print(f"installed {target}")
+        print(f"installed {target}")
+
+        # Shipping a GPLv2 binary without its licence is not an option.
+        found = False
+        for member, filename in LICENCE_MEMBERS.items():
+            actual = members.get(member.lower())
+            if actual is None:
+                continue
+            (dest / filename).write_bytes(zf.read(actual))
+            print(f"installed {dest / filename}")
+            found = True
+        if not found:
+            raise SystemExit(
+                "no licence file found in the HandBrakeCLI archive; refusing to "
+                "redistribute a GPLv2 binary without one"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
