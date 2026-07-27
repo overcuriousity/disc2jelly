@@ -5,3 +5,10 @@ work/
 *.zip
 venv/
 .venv/
+
+# Windows build artefacts
+build_config.toml
+disc2jelly/app/_baked.py
+disc2jelly/vendor/
+build/pyi/
+dist/

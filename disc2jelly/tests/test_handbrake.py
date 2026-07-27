@@ -108,7 +108,7 @@ def test_encode_success_newline_separated(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     events: list[dict] = []
     result = handbrake.encode(
-        "HandBrakeCLI", src, dst, "hevc", 22, events.append, threading.Event()
+        "HandBrakeCLI", src, 1, dst, "hevc", 22, events.append, threading.Event()
     )
     assert result == dst
 
@@ -156,7 +156,7 @@ def test_encode_success_carriage_return_separated(
     dst = tmp_path / "out.mkv"
     dst.write_bytes(b"y")
     events: list[dict] = []
-    handbrake.encode("HandBrakeCLI", src, dst, "h264", 20, events.append, threading.Event())
+    handbrake.encode("HandBrakeCLI", src, 1, dst, "h264", 20, events.append, threading.Event())
     enc = [e for e in events if e["detail"] == "Encoding"]
     assert [e["percent"] for e in enc] == [0.0, 5.84, 68.13]
     assert any(e["detail"] == "Finalizing" and e["percent"] >= 99.0 for e in events)
@@ -168,7 +168,7 @@ def test_encode_h264_profile_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     src.write_bytes(b"x")
     dst = tmp_path / "out.mkv"
     dst.write_bytes(b"y")
-    handbrake.encode("HandBrakeCLI", src, dst, "h264", 20, lambda e: None, threading.Event())
+    handbrake.encode("HandBrakeCLI", src, 1, dst, "h264", 20, lambda e: None, threading.Event())
     args = made[0].args
     assert args[args.index("--encoder") + 1] == "x264"
     assert args[args.index("--quality") + 1] == "20"
@@ -180,7 +180,7 @@ def test_encode_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     src.write_bytes(b"x")
     with pytest.raises(handbrake.EncodeError, match="exited with code 1"):
         handbrake.encode(
-            "HandBrakeCLI", src, tmp_path / "out.mkv", "hevc", 22,
+            "HandBrakeCLI", src, 1, tmp_path / "out.mkv", "hevc", 22,
             lambda e: None, threading.Event(),
         )
 
@@ -191,7 +191,7 @@ def test_encode_missing_output_raises(monkeypatch: pytest.MonkeyPatch, tmp_path:
     src.write_bytes(b"x")
     with pytest.raises(handbrake.EncodeError, match="output file is missing"):
         handbrake.encode(
-            "HandBrakeCLI", src, tmp_path / "out.mkv", "hevc", 22,
+            "HandBrakeCLI", src, 1, tmp_path / "out.mkv", "hevc", 22,
             lambda e: None, threading.Event(),
         )
 
@@ -204,7 +204,7 @@ def test_encode_cancel_terminates(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     cancel.set()
     with pytest.raises(handbrake.EncodeError, match="cancelled"):
         handbrake.encode(
-            "HandBrakeCLI", src, tmp_path / "out.mkv", "hevc", 22,
+            "HandBrakeCLI", src, 1, tmp_path / "out.mkv", "hevc", 22,
             lambda e: None, cancel,
         )
     assert made[0].terminated or made[0].killed
@@ -217,7 +217,7 @@ def test_encode_missing_binary_raises(monkeypatch: pytest.MonkeyPatch, tmp_path:
     monkeypatch.setattr(handbrake.subprocess, "Popen", boom)
     with pytest.raises(handbrake.EncodeError, match="failed to start"):
         handbrake.encode(
-            "/nope", tmp_path / "in.mkv", tmp_path / "out.mkv", "hevc", 22,
+            "/nope", tmp_path / "in.mkv", 1, tmp_path / "out.mkv", "hevc", 22,
             lambda e: None, threading.Event(),
         )
 
@@ -229,9 +229,77 @@ def test_event_schema_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     dst = tmp_path / "out.mkv"
     dst.write_bytes(b"y")
     events: list[dict] = []
-    handbrake.encode("HandBrakeCLI", src, dst, "hevc", 22, events.append, threading.Event())
+    handbrake.encode("HandBrakeCLI", src, 1, dst, "hevc", 22, events.append, threading.Event())
     allowed = {"job_id", "stage", "status", "percent", "detail", "fps", "eta", "log", "ts"}
     for e in events:
         assert set(e) <= allowed
         assert e["stage"] == "ENCODE"
         assert {"stage", "status", "percent", "detail", "ts"} <= set(e)
+
+
+# --- direct-from-disc input (MakeMKV rip stage removed) ----------------------
+
+
+def _patch_popen_producing_output(
+    monkeypatch: pytest.MonkeyPatch, dst: Path
+) -> list[FakePopen]:
+    """Like _patch_popen, but the fake HandBrake also writes its output file."""
+    made: list[FakePopen] = []
+
+    def factory(args, **kwargs):  # noqa: ANN001, ANN202
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"encoded")
+        proc = FakePopen(args, stdout_text=_fixture_text(), returncode=0, **kwargs)
+        made.append(proc)
+        return proc
+
+    monkeypatch.setattr(handbrake.subprocess, "Popen", factory)
+    return made
+
+
+def test_encode_reads_the_disc_device_directly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No intermediate rip: -i is the optical device, not a ripped MKV."""
+    dst = tmp_path / "out" / "Movie (2020).mkv"
+    made = _patch_popen_producing_output(monkeypatch, dst)
+
+    handbrake.encode(
+        "HandBrakeCLI", "/dev/sr0", 3, dst, "hevc", 22,
+        lambda e: None, threading.Event(),
+    )
+
+    args = made[0].args
+    assert args[args.index("-i") + 1] == "/dev/sr0"
+    assert args[args.index("--title") + 1] == "3"
+
+
+def test_encode_accepts_a_windows_drive_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dst = tmp_path / "out.mkv"
+    made = _patch_popen_producing_output(monkeypatch, dst)
+
+    handbrake.encode(
+        "HandBrakeCLI", "D:\\", 1, dst, "h264", 20,
+        lambda e: None, threading.Event(),
+    )
+
+    assert made[0].args[made[0].args.index("-i") + 1] == "D:\\"
+
+
+def test_encode_creates_the_destination_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dst = tmp_path / "deep" / "nested" / "out.mkv"
+    _patch_popen(monkeypatch, _fixture_text())
+
+    # FakePopen writes no output file, so the encode fails — but the parent
+    # directory must have been created before HandBrake was ever started.
+    with pytest.raises(handbrake.EncodeError):
+        handbrake.encode(
+            "HandBrakeCLI", "/dev/sr0", 1, dst, "hevc", 22,
+            lambda e: None, threading.Event(),
+        )
+
+    assert dst.parent.is_dir()

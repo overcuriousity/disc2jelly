@@ -1,7 +1,0 @@
-MSG:1005,0,1,"MakeMKV v1.18.1 linux(x64-release) started","%1 started","MakeMKV v1.18.1 linux(x64-release)"
-PRGT:5018,0,"Saving all titles to MKV files"
-PRGC:5015,1,"Saving 2 titles into directory /tmp/work"
-PRGV:0,0,65536
-PRGV:900,32768,65536
-PRGV:1500,65536,65536
-MSG:5037,516,2,"Copy complete. 0 titles saved, 1 failed.","Copy complete. %1 titles saved, %2 failed.","0","1"

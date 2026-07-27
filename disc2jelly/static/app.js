@@ -6,10 +6,12 @@ const $ = (id) => document.getElementById(id);
 const state = {
   drives: [],
   titles: [],
-  currentDrive: null,
+  currentDrive: null,     // device path: "/dev/sr0" or "D:\\"
   currentDiscLabel: "",
+  kind: "movie",          // "movie" | "series"
+  episodes: [],           // TMDb episode list for the chosen season
   chosen: null,           // {tmdb_id: number|null, title: string, year: number|null}
-  jobs: {},               // job_id -> {info, ripPct, encPct, upPct, fps, eta, status, error}
+  jobs: {},               // job_id -> {info, encPct, upPct, fps, eta, status, error}
   logLines: [],
 };
 
@@ -52,12 +54,13 @@ function setDot(id, value) { // value: true ok / false bad / null unknown
 async function refreshHealth() {
   try {
     const h = await api("/api/health");
-    setDot("dot-makemkv", h.binaries && h.binaries.makemkv);
+    setDot("dot-dvdcss", h.dvdcss_ok === undefined ? null : h.dvdcss_ok);
     setDot("dot-handbrake", h.binaries && h.binaries.handbrake);
-    setDot("dot-webdav", h.webdav_ok === null ? null : h.webdav_ok);
+    setDot("dot-destination", h.destination_ok === null ? null : h.destination_ok);
     setDot("dot-tmdb", h.tmdb_key_set ? true : null);
+    showDvdCssHint(h.dvdcss_ok === false ? (h.dvdcss_hint || "") : "");
   } catch (e) {
-    ["dot-makemkv", "dot-handbrake", "dot-webdav", "dot-tmdb"]
+    ["dot-dvdcss", "dot-handbrake", "dot-destination", "dot-tmdb"]
       .forEach((id) => setDot(id, null));
     log("Health check failed: " + e.message);
   }
@@ -70,7 +73,7 @@ async function scanDrives() {
   $("disc-found").hidden = true;
   try {
     const drives = await api("/api/drives");
-    state.drives = drives.filter((d) => d.label);
+    state.drives = drives.filter((d) => d.has_disc);
     if (state.drives.length === 0) {
       $("disc-status").textContent =
         "No disc found. Put a DVD or Blu-ray in the drive, then press “Look for a disc”.";
@@ -82,27 +85,27 @@ async function scanDrives() {
     if (state.drives.length > 1) {
       state.drives.forEach((d) => {
         const opt = document.createElement("option");
-        opt.value = d.id;
-        opt.textContent = d.label + " (" + d.device + ")";
+        opt.value = d.device;
+        opt.textContent = (d.label || "Unnamed disc") + " (" + d.device + ")";
         driveSelect.appendChild(opt);
       });
       driveField.hidden = false;
     } else {
       driveField.hidden = true;
     }
-    await loadTitles(state.drives[0].id);
+    await loadTitles(state.drives[0].device);
   } catch (e) {
     $("disc-status").textContent = "Could not look for a disc: " + e.message;
   }
 }
 
-async function loadTitles(driveId) {
-  const drive = state.drives.find((d) => d.id === driveId) || state.drives[0];
-  state.currentDrive = drive.id;
+async function loadTitles(device) {
+  const drive = state.drives.find((d) => d.device === device) || state.drives[0];
+  state.currentDrive = drive.device;
   state.currentDiscLabel = drive.label || "";
   $("disc-status").textContent = "Reading the disc, this can take a minute…";
   try {
-    const titles = await api("/api/drives/" + encodeURIComponent(drive.id) + "/titles");
+    const titles = await api("/api/titles?device=" + encodeURIComponent(drive.device));
     state.titles = titles;
     if (!titles.length) {
       $("disc-status").textContent = "The disc has no movie titles on it.";
@@ -124,7 +127,8 @@ async function loadTitles(driveId) {
       const opt = document.createElement("option");
       opt.value = String(t.index);
       opt.textContent = (t.name || ("Title " + t.index)) +
-        " — " + fmtDuration(t.duration_s) + ", " + t.chapters + " chapters";
+        " — " + fmtDuration(t.duration_s) + ", " + t.chapters + " chapters" +
+        (t.duplicate_of ? " (same as title " + t.duplicate_of + ")" : "");
       if (i === mainIdx) opt.selected = true;
       sel.appendChild(opt);
     });
@@ -144,11 +148,153 @@ async function loadTitles(driveId) {
     });
     $("extras-details").hidden = titles.length <= 1;
 
+    buildEpisodeRows();
     resetMovieChoice();
-    suggestMovie(drive.label || "");
+    await applyDiscHint(drive.label || "");
   } catch (e) {
     $("disc-status").textContent = "Could not read the disc: " + e.message;
   }
+}
+
+/* -------------------------------------------------------- series episodes */
+
+/* One row per disc title: a tick box, the duration, and an episode number.
+   Titles the scanner flagged as duplicates start unticked so a "play all"
+   title does not silently become an extra episode. */
+function buildEpisodeRows() {
+  const list = $("episode-list");
+  list.innerHTML = "";
+  state.titles.forEach((t) => {
+    const row = document.createElement("label");
+    row.className = "episode-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.titleIndex = String(t.index);
+    cb.checked = !t.duplicate_of;
+
+    const num = document.createElement("input");
+    num.type = "number";
+    num.min = "1";
+    num.max = "999";
+    num.className = "episode-number";
+    num.style.width = "4.5rem";
+
+    const name = document.createElement("span");
+    name.className = "episode-name";
+
+    row.appendChild(cb);
+    row.appendChild(num);
+    row.appendChild(document.createTextNode(
+      " " + fmtDuration(t.duration_s) +
+      (t.duplicate_of ? " (same as title " + t.duplicate_of + ") " : " ")));
+    row.appendChild(name);
+    list.appendChild(row);
+  });
+  renumberEpisodes();
+}
+
+function renumberEpisodes() {
+  const first = parseInt($("first-episode-input").value, 10) || 1;
+  let n = first;
+  $("episode-list").querySelectorAll(".episode-row").forEach((row) => {
+    const cb = row.querySelector("input[type=checkbox]");
+    const num = row.querySelector(".episode-number");
+    if (cb.checked) {
+      num.value = String(n);
+      n += 1;
+    }
+    num.disabled = !cb.checked;
+  });
+  labelEpisodesFromTmdb();
+}
+
+/* Show the TMDb episode title next to each number so a wrong ordering is
+   visible before anything is encoded. */
+function labelEpisodesFromTmdb() {
+  const season = parseInt($("season-input").value, 10);
+  $("episode-list").querySelectorAll(".episode-row").forEach((row) => {
+    const num = parseInt(row.querySelector(".episode-number").value, 10);
+    const match = state.episodes.find(
+      (e) => e.season === season && e.episode === num);
+    row.querySelector(".episode-name").textContent = match ? "— " + match.name : "";
+  });
+}
+
+function collectEpisodes() {
+  const season = parseInt($("season-input").value, 10) || 1;
+  const out = [];
+  $("episode-list").querySelectorAll(".episode-row").forEach((row) => {
+    const cb = row.querySelector("input[type=checkbox]");
+    if (!cb.checked) return;
+    const episode = parseInt(row.querySelector(".episode-number").value, 10);
+    if (!episode) return;
+    const match = state.episodes.find(
+      (e) => e.season === season && e.episode === episode);
+    out.push({
+      title_index: parseInt(cb.dataset.titleIndex, 10),
+      season: season,
+      episode: episode,
+      name: match ? match.name : "",
+    });
+  });
+  return out;
+}
+
+async function loadSeasonEpisodes() {
+  state.episodes = [];
+  if (state.kind !== "series" || !state.chosen || !state.chosen.tmdb_id) {
+    labelEpisodesFromTmdb();
+    return;
+  }
+  const season = parseInt($("season-input").value, 10) || 1;
+  try {
+    state.episodes = await api(
+      "/api/tmdb/tv/" + state.chosen.tmdb_id + "/season/" + season);
+  } catch (e) {
+    log("Could not load episode names: " + e.message);
+  }
+  labelEpisodesFromTmdb();
+}
+
+function setKind(kind) {
+  state.kind = kind;
+  $("movie-mode").hidden = kind !== "movie";
+  $("series-mode").hidden = kind !== "series";
+  document.querySelectorAll('input[name="disc-kind"]').forEach((r) => {
+    r.checked = r.value === kind;
+  });
+}
+
+/* Ask the server what the disc label looks like, then preselect the mode,
+   season number and search term. */
+async function applyDiscHint(label) {
+  let hint = { kind: "movie", title: label, season: null, disc: null };
+  try {
+    hint = await api("/api/disc/hint?label=" + encodeURIComponent(label));
+  } catch (e) { /* fall back to the raw label */ }
+  setKind(hint.kind);
+  if (hint.season !== null && hint.season !== undefined) {
+    $("season-input").value = String(hint.season);
+  }
+  renumberEpisodes();
+  await suggestMovie(hint.title || label);
+}
+
+/* ------------------------------------------------------------- libdvdcss */
+
+/* There is no install button: VideoLAN publishes libdvdcss as source only,
+   so the app can explain what to do but never fetch it. The server sends the
+   platform-specific instructions, including the exact target folder. */
+function showDvdCssHint(hint) {
+  const banner = $("dvdcss-banner");
+  if (!banner) return;
+  if (!hint) {
+    banner.hidden = true;
+    return;
+  }
+  banner.querySelector(".banner-text").textContent = hint;
+  banner.hidden = false;
 }
 
 /* --------------------------------------------------------- movie picking */
@@ -165,13 +311,13 @@ function resetMovieChoice() {
 async function suggestMovie(label) {
   if (!label) return;
   try {
-    const matches = await api("/api/tmdb/search?q=" + encodeURIComponent(label));
+    const matches = await api(searchUrl(label));
     if (matches && matches.length > 0) {
       const m = matches[0];
       $("suggestion-title").textContent =
-        m.title + (m.year ? " (" + m.year + ")" : "");
+        matchTitle(m) + (m.year ? " (" + m.year + ")" : "");
       $("suggestion").dataset.tmdbId = m.tmdb_id;
-      $("suggestion").dataset.title = m.title;
+      $("suggestion").dataset.title = matchTitle(m);
       $("suggestion").dataset.year = m.year || "";
       $("suggestion").hidden = false;
     } else {
@@ -183,6 +329,14 @@ async function suggestMovie(label) {
   }
 }
 
+/* TMDb movie results carry .title, TV results carry .name. */
+function matchTitle(m) { return m.title || m.name || ""; }
+
+function searchUrl(q) {
+  return "/api/tmdb/search?q=" + encodeURIComponent(q) +
+    (state.kind === "series" ? "&kind=tv" : "");
+}
+
 function showMovieSearch(prefill) {
   $("suggestion").hidden = true;
   $("movie-search-field").hidden = false;
@@ -192,13 +346,23 @@ function showMovieSearch(prefill) {
 function chooseMovie(choice) {
   state.chosen = choice;
   const el = $("chosen-movie");
-  el.textContent = "Movie: " + choice.title +
+  el.textContent = (state.kind === "series" ? "Series: " : "Film: ") + choice.title +
     (choice.year ? " (" + choice.year + ")" : "");
   el.hidden = false;
   $("suggestion").hidden = true;
   $("movie-search-field").hidden = true;
   $("rip-btn").disabled = false;
   $("rip-hint").textContent = "Ready — press the big button.";
+  loadSeasonEpisodes();
+}
+
+/* Only the WebDAV fields are relevant when WebDAV is the chosen destination. */
+function syncDestinationFields() {
+  const webdav = $("cfg-destination-kind").value === "webdav";
+  $("cfg-local-field").hidden = webdav;
+  ["cfg-webdav-url-field", "cfg-webdav-user-field",
+   "cfg-webdav-password-field", "cfg-webdav-test-row"]
+    .forEach((id) => { $(id).hidden = !webdav; });
 }
 
 async function searchMovies() {
@@ -207,7 +371,7 @@ async function searchMovies() {
   const list = $("search-results");
   list.innerHTML = "";
   try {
-    const matches = await api("/api/tmdb/search?q=" + encodeURIComponent(q));
+    const matches = await api(searchUrl(q));
     if (!matches.length) {
       const li = document.createElement("li");
       const b = document.createElement("button");
@@ -220,9 +384,9 @@ async function searchMovies() {
     matches.slice(0, 8).forEach((m) => {
       const li = document.createElement("li");
       const b = document.createElement("button");
-      b.textContent = m.title + (m.year ? " (" + m.year + ")" : "");
+      b.textContent = matchTitle(m) + (m.year ? " (" + m.year + ")" : "");
       b.addEventListener("click", () =>
-        chooseMovie({ tmdb_id: m.tmdb_id, title: m.title, year: m.year || null }));
+        chooseMovie({ tmdb_id: m.tmdb_id, title: matchTitle(m), year: m.year || null }));
       li.appendChild(b);
       list.appendChild(li);
     });
@@ -235,20 +399,28 @@ async function searchMovies() {
 
 async function startRip() {
   if (!state.chosen || !state.currentDrive) return;
-  const mainTitle = parseInt($("title-select").value, 10);
-  const extras = Array.from(
-    $("extras-list").querySelectorAll("input[type=checkbox]:checked"))
-    .map((cb) => parseInt(cb.value, 10));
-  const titles = [mainTitle, ...extras.filter((t) => t !== mainTitle)];
   const body = {
     drive: state.currentDrive,
-    titles: titles,
+    kind: state.kind,
     tmdb_id: state.chosen.tmdb_id,
     title: state.chosen.title,
     year: state.chosen.year,
     profile: $("profile-select").value,
     disc_name: state.currentDiscLabel,
   };
+  if (state.kind === "series") {
+    body.episodes = collectEpisodes();
+    if (!body.episodes.length) {
+      alert("Tick at least one episode first.");
+      return;
+    }
+  } else {
+    const mainTitle = parseInt($("title-select").value, 10);
+    const extras = Array.from(
+      $("extras-list").querySelectorAll("input[type=checkbox]:checked"))
+      .map((cb) => parseInt(cb.value, 10));
+    body.titles = [mainTitle, ...extras.filter((t) => t !== mainTitle)];
+  }
   $("rip-btn").disabled = true;
   try {
     await api("/api/jobs", {
@@ -269,8 +441,7 @@ async function startRip() {
 
 const BADGE_TEXT = {
   DETECT: "Waiting…", IDENTIFY: "Waiting…",
-  RIP: "Copying from disc…", ENCODE: "Shrinking…",
-  UPLOAD: "Saving to server…", CLEANUP: "Tidying up…",
+  ENCODE: "Copying from disc…", UPLOAD: "Saving…", CLEANUP: "Tidying up…",
   DONE: "Done", ERROR: "Something went wrong", CANCELLED: "Cancelled",
 };
 
@@ -290,13 +461,12 @@ function jobCard(job) {
     '  <span class="job-name"></span>' +
     '  <span class="badge running"></span>' +
     "</div>" +
-    stageRow("rip", "Rip") +
-    stageRow("enc", "Encode") +
-    stageRow("up", "Upload") +
+    stageRow("enc", "Rip &amp; shrink") +
+    stageRow("up", "Save") +
     '<p class="job-error" hidden></p>' +
     '<button class="btn btn-danger job-cancel">Cancel</button>';
   card.querySelector(".job-name").textContent =
-    job.movie_title + (job.year ? " (" + job.year + ")" : "");
+    job.display_title + (job.year ? " (" + job.year + ")" : "");
   card.querySelector(".job-cancel").addEventListener("click", async () => {
     try {
       await api("/api/jobs/" + job.id + "/cancel", { method: "POST" });
@@ -351,7 +521,6 @@ function updateJobCard(job) {
   card.querySelector(".job-cancel").hidden = finished;
 
   const st = state.jobs[job.id] || {};
-  setBar(card, "rip", st.ripPct || (job.status === "DONE" ? 100 : 0));
   setBar(card, "enc", st.encPct || (job.status === "DONE" ? 100 : 0),
     st.encExtra || "");
   setBar(card, "up", st.upPct || (job.status === "DONE" ? 100 : 0));
@@ -410,10 +579,7 @@ function applyEventToCard(ev, card) {
     }
   }
   const pct = ev.percent;
-  if (ev.stage === "RIP") {
-    if (pct !== null && pct !== undefined) st.ripPct = pct;
-    setBar(card, "rip", st.ripPct);
-  } else if (ev.stage === "ENCODE") {
+  if (ev.stage === "ENCODE") {
     if (pct !== null && pct !== undefined) st.encPct = pct;
     let extra = "";
     if (ev.fps) extra += Math.round(ev.fps) + " fps";
@@ -464,13 +630,14 @@ function connectEvents() {
 /* ---------------------------------------------------------- settings modal */
 
 const CFG_FIELDS = [
+  ["destination_kind", "cfg-destination-kind"],
+  ["local_path", "cfg-local-path"],
   ["webdav_url", "cfg-webdav-url"],
   ["webdav_user", "cfg-webdav-user"],
   ["webdav_password", "cfg-webdav-password"],
   ["tmdb_api_key", "cfg-tmdb-key"],
   ["temp_dir", "cfg-temp-dir"],
   ["encoder", "cfg-encoder"],
-  ["makemkv_path", "cfg-makemkv-path"],
   ["handbrake_path", "cfg-handbrake-path"],
 ];
 
@@ -480,7 +647,7 @@ async function openSettings() {
   try {
     const cfg = await api("/api/config");
     CFG_FIELDS.forEach(([key, id]) => { $(id).value = cfg[key] || ""; });
-    $("cfg-keep-mkv").checked = !!cfg.keep_mkv;
+    syncDestinationFields();
     $("cfg-hevc-quality").value = cfg.hevc_quality;
     $("cfg-h264-quality").value = cfg.h264_quality;
     $("cfg-min-title").value = cfg.min_title_seconds;
@@ -493,7 +660,6 @@ async function openSettings() {
 async function saveSettings() {
   const body = {};
   CFG_FIELDS.forEach(([key, id]) => { body[key] = $(id).value.trim(); });
-  body.keep_mkv = $("cfg-keep-mkv").checked;
   body.hevc_quality = parseInt($("cfg-hevc-quality").value, 10);
   body.h264_quality = parseInt($("cfg-h264-quality").value, 10);
   body.min_title_seconds = parseInt($("cfg-min-title").value, 10);
@@ -565,8 +731,25 @@ function init() {
       year: yearVal ? parseInt(yearVal, 10) : null,
     });
   });
+  document.querySelectorAll('input[name="disc-kind"]').forEach((radio) => {
+    radio.addEventListener("change", async (e) => {
+      setKind(e.target.value);
+      // The TMDb endpoint differs per mode, so re-run the lookup.
+      resetMovieChoice();
+      await suggestMovie(state.currentDiscLabel);
+    });
+  });
+  $("renumber-btn").addEventListener("click", renumberEpisodes);
+  $("first-episode-input").addEventListener("change", renumberEpisodes);
+  $("season-input").addEventListener("change", loadSeasonEpisodes);
+  $("episode-list").addEventListener("change", (e) => {
+    if (e.target.type === "checkbox") renumberEpisodes();
+    else labelEpisodesFromTmdb();
+  });
+
   $("rip-btn").addEventListener("click", startRip);
   $("settings-btn").addEventListener("click", openSettings);
+  $("cfg-destination-kind").addEventListener("change", syncDestinationFields);
   $("settings-save").addEventListener("click", saveSettings);
   $("settings-close").addEventListener("click", () => {
     $("settings-modal").hidden = true;

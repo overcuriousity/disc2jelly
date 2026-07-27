@@ -166,6 +166,20 @@ def test_clean_query_empty():
     assert clean_query("   ") == ""
 
 
+# _SPLIT_RE gained ":" and whitespace when parse_disc_label was added, which
+# also changed clean_query. Space- and colon-separated labels used to arrive as
+# one token, so noise stripping silently did nothing to them. Pin the improved
+# behaviour so a future tweak to the regex cannot quietly undo it.
+@pytest.mark.parametrize("label,expected", [
+    ("THE MATRIX 16X9", "The Matrix"),
+    ("DAS BOOT DIRECTORS CUT DISC1", "Das Boot Directors Cut"),
+    ("LOTR: THE TWO TOWERS", "Lotr the Two Towers"),
+    ("ALIEN WS", "Alien"),
+])
+def test_clean_query_strips_noise_from_space_separated_labels(label, expected):
+    assert clean_query(label) == expected
+
+
 # ---------------------------------------------------------------------------
 # jellyfin_movie_relpath
 # ---------------------------------------------------------------------------

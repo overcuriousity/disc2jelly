@@ -81,27 +81,34 @@ def _terminate(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
 
 def encode(
     handbrake_path: str,
-    src: Path,
+    source: str | Path,
+    title_index: int,
     dst: Path,
     profile: str,
     quality: int,
     emit: Callable[[dict], None],
     cancel: threading.Event,
 ) -> Path:
-    """Encode src → dst (MKV). Returns dst on success.
+    """Encode one title of `source` to `dst` (MKV). Returns dst on success.
+
+    `source` is an optical device — "/dev/sr0" or "D:\\\\" — read directly by
+    HandBrake with libdvdcss handling CSS. There is no separate rip stage, so
+    this single pass covers what MakeMKV + HandBrake used to do in two.
 
     profile: "hevc" (x265) | "h264" (x264). Emits stage "ENCODE" events:
     indeterminate "Analyzing source" during scan, then percent/fps/eta
     from progress lines, "Finalizing" for Muxing. Raises EncodeError on
     non-zero exit, missing output, or cancel.
     """
-    src, dst = Path(src), Path(dst)
+    dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     encoder = "x264" if profile == "h264" else "x265"
     args = [
         handbrake_path,
         "-i",
-        str(src),
+        str(source),
+        "--title",
+        str(title_index),
         "-o",
         str(dst),
         "--format",

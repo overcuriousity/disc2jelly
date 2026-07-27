@@ -25,25 +25,25 @@ function check(out, className, text) {
 
 // 1. A "running" event with a new stage advances the badge.
 const st = {};
-let out = badgeForEvent(st, { job_id: "j", stage: "RIP", status: "running" });
+let out = badgeForEvent(st, { job_id: "j", stage: "ENCODE", status: "running" });
 check(out, "badge running", "Copying from disc…");
-assert.equal(st.badgeStage, "RIP");
+assert.equal(st.badgeStage, "ENCODE");
 
 // 2. Same stage again -> no update (progress events do not churn the badge).
-out = badgeForEvent(st, { job_id: "j", stage: "RIP", status: "running", percent: 42 });
+out = badgeForEvent(st, { job_id: "j", stage: "ENCODE", status: "running", percent: 42 });
 assert.equal(out, null);
 
-// 3. Stage transition RIP -> ENCODE advances the badge.
-out = badgeForEvent(st, { job_id: "j", stage: "ENCODE", status: "running" });
-check(out, "badge running", "Shrinking…");
+// 3. Stage transition ENCODE -> UPLOAD advances the badge.
+out = badgeForEvent(st, { job_id: "j", stage: "UPLOAD", status: "running" });
+check(out, "badge running", "Saving…");
 
 // 4. APP-stage events never touch the badge (not in BADGE_TEXT).
 out = badgeForEvent(st, { job_id: "j", stage: "APP", status: "running" });
 assert.equal(out, null);
 
-// 5. Per-stage "done" events (e.g. rip finished, encode not started) do not
+// 5. Per-stage "done" events (e.g. encode finished, save not started) do not
 //    regress the badge.
-out = badgeForEvent(st, { job_id: "j", stage: "RIP", status: "done", percent: 100 });
+out = badgeForEvent(st, { job_id: "j", stage: "ENCODE", status: "done", percent: 100 });
 assert.equal(out, null);
 
 // 6. Terminal events always update the badge.

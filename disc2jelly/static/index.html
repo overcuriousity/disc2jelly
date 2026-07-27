@@ -12,12 +12,12 @@
   <header class="statusbar">
     <h1 class="brand">Disc2Jelly</h1>
     <div class="health" id="health">
-      <span class="dot-wrap" title="Disc ripper program (MakeMKV)">
-        <span class="dot" id="dot-makemkv"></span>Disc ripper</span>
+      <span class="dot-wrap" title="DVD decryption library (libdvdcss)">
+        <span class="dot" id="dot-dvdcss"></span>Disc reader</span>
       <span class="dot-wrap" title="Movie shrinker program (HandBrake)">
         <span class="dot" id="dot-handbrake"></span>Movie shrinker</span>
-      <span class="dot-wrap" title="Server connection (WebDAV)">
-        <span class="dot" id="dot-webdav"></span>Server</span>
+      <span class="dot-wrap" title="Where finished files are saved">
+        <span class="dot" id="dot-destination"></span>Destination</span>
       <span class="dot-wrap" title="Movie look-up (TMDb)">
         <span class="dot" id="dot-tmdb"></span>Movie look-up</span>
     </div>
@@ -25,6 +25,11 @@
   </header>
 
   <main>
+    <!-- libdvdcss guidance; shown only when CSS decryption is missing ------ -->
+    <div class="banner" id="dvdcss-banner" hidden role="alert">
+      <p class="banner-text"></p>
+    </div>
+
     <!-- 2 · Disc panel ---------------------------------------------------- -->
     <section class="card" id="disc-panel">
       <div class="panel-head">
@@ -42,14 +47,44 @@
         </div>
 
         <div class="field">
-          <label for="title-select">Movie on the disc</label>
-          <select id="title-select"></select>
+          <label>What is on this disc?</label>
+          <div class="row" id="kind-toggle">
+            <label><input type="radio" name="disc-kind" value="movie" checked> A film</label>
+            <label><input type="radio" name="disc-kind" value="series"> TV episodes</label>
+          </div>
         </div>
 
-        <details id="extras-details">
-          <summary>Also copy extra videos from this disc</summary>
-          <div id="extras-list" class="extras-list"></div>
-        </details>
+        <!-- Film mode -->
+        <div id="movie-mode">
+          <div class="field">
+            <label for="title-select">Film on the disc</label>
+            <select id="title-select"></select>
+          </div>
+
+          <details id="extras-details">
+            <summary>Also copy extra videos from this disc</summary>
+            <div id="extras-list" class="extras-list"></div>
+          </details>
+        </div>
+
+        <!-- Series mode -->
+        <div id="series-mode" hidden>
+          <div class="row">
+            <div class="field">
+              <label for="season-input">Season</label>
+              <input type="number" id="season-input" min="0" max="99" value="1" style="width:5rem">
+            </div>
+            <div class="field">
+              <label for="first-episode-input">First episode on this disc</label>
+              <input type="number" id="first-episode-input" min="1" max="999" value="1" style="width:5rem">
+            </div>
+            <button class="btn" id="renumber-btn">Number them</button>
+          </div>
+          <p class="muted" id="series-hint">
+            Tick the episodes to copy and check the numbering before you start.
+          </p>
+          <div id="episode-list" class="extras-list"></div>
+        </div>
 
         <!-- TMDb suggestion -->
         <div class="suggestion" id="suggestion" hidden>
@@ -118,18 +153,31 @@
       <h2 id="settings-title">Settings</h2>
 
       <div class="field">
+        <label for="cfg-destination-kind">Where to save finished films</label>
+        <select id="cfg-destination-kind">
+          <option value="local">A folder on this PC or the network</option>
+          <option value="webdav">A WebDAV server</option>
+        </select>
+      </div>
+      <div class="field" id="cfg-local-field">
+        <label for="cfg-local-path">Folder</label>
+        <input type="text" id="cfg-local-path"
+               placeholder="e.g. \\nas\media  or  D:\Media  (empty = Videos\Disc2Jelly)">
+      </div>
+
+      <div class="field" id="cfg-webdav-url-field">
         <label for="cfg-webdav-url">Server address (WebDAV)</label>
         <input type="text" id="cfg-webdav-url" placeholder="https://nas.example/remote.php/dav/files/me/movies-inbox">
       </div>
-      <div class="field">
+      <div class="field" id="cfg-webdav-user-field">
         <label for="cfg-webdav-user">Server user name</label>
         <input type="text" id="cfg-webdav-user" autocomplete="username">
       </div>
-      <div class="field">
+      <div class="field" id="cfg-webdav-password-field">
         <label for="cfg-webdav-password">Server password</label>
         <input type="password" id="cfg-webdav-password" autocomplete="current-password">
       </div>
-      <div class="row">
+      <div class="row" id="cfg-webdav-test-row">
         <button class="btn" id="test-webdav-btn">Test server connection</button>
         <span class="muted" id="test-webdav-result"></span>
       </div>
@@ -143,9 +191,6 @@
         <div class="field">
           <label for="cfg-temp-dir">Temporary work folder</label>
           <input type="text" id="cfg-temp-dir" placeholder="leave empty for default">
-        </div>
-        <div class="field checkbox">
-          <label><input type="checkbox" id="cfg-keep-mkv"> Keep the large intermediate file (uses lots of disk)</label>
         </div>
         <div class="field">
           <label for="cfg-encoder">Default file type</label>
@@ -161,10 +206,6 @@
         <div class="field">
           <label for="cfg-h264-quality">H.264 quality (lower = better, 0–63)</label>
           <input type="number" id="cfg-h264-quality" min="0" max="63">
-        </div>
-        <div class="field">
-          <label for="cfg-makemkv-path">MakeMKV program location (optional)</label>
-          <input type="text" id="cfg-makemkv-path" placeholder="auto-detect">
         </div>
         <div class="field">
           <label for="cfg-handbrake-path">HandBrake program location (optional)</label>

@@ -1,0 +1,26 @@
+# Copy to build_config.toml (gitignored) and fill in before building the
+# Windows installer:  powershell -File build\build_windows.ps1
+#
+# None of these are required. Anything left blank simply means the user
+# configures it in Settings after install.
+
+# Free key from https://www.themoviedb.org/settings/api (v3 key or v4 token).
+# Baked in so the end user never has to obtain one themselves.
+tmdb_api_key = ""
+
+# "local" (a folder / mapped drive / UNC path) or "webdav".
+destination_kind = "local"
+
+# Pre-fills the installer's folder picker. Point at the Jellyfin library.
+local_path = ""
+
+# WebDAV only. URL and user are NOT secret and are baked in as wizard
+# defaults. The password is typed during install and stored on that machine.
+webdav_url = ""
+webdav_user = ""
+
+# Only used with build_windows.ps1 -BakePassword. Leave empty otherwise.
+# SECURITY: PyInstaller does not obfuscate. A baked password is recoverable
+# from the shipped .exe with `strings`. Use an app password scoped to the
+# destination share, and never publish such an installer.
+webdav_password = ""

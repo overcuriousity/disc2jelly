@@ -1,16 +1,21 @@
 # SPEC.md — Disc2Jelly
 
-**One-click DVD/Blu-ray → Jellyfin ingest app.** Local Python app (FastAPI + vanilla-JS web UI), runs on Windows 10/11 and Linux. Detects an inserted disc, rips it with MakeMKV, encodes with HandBrake (HEVC default), names output per Jellyfin movie spec via TMDb (manual fallback), uploads to a WebDAV folder, cleans up temp files. Wife-proof UI with accurate per-stage progress bars.
+**One-click DVD → Jellyfin ingest app, films and TV series.** Local Python app (FastAPI + vanilla-JS web UI), runs on Windows 10/11 and Linux. Detects an inserted disc, has HandBrake read and encode it in a single pass (HEVC default), names output per the Jellyfin movie/show spec via TMDb (manual fallback), writes to a local folder or WebDAV, cleans up temp files. Wife-proof UI with accurate per-stage progress bars.
+
+On Windows it ships as one Inno Setup installer that bundles Python and HandBrakeCLI. libdvdcss is the sole exception — it has no official binary distribution, so the user supplies it and the app explains how.
 
 ## Non-goals
+- **No Blu-ray.** AACS is an actively maintained revocation scheme plus the BD+ VM; no FOSS path works reliably and every working tool is proprietary and paid. DVD's CSS is cryptographically broken, so libdvdcss handles it with no key database. Supporting Blu-ray would reintroduce exactly the dependency this design exists to remove.
 - No user auth, no multi-user, no remote access (localhost only).
 - No music CDs, no transcoding of existing file libraries.
-- No Docker (native install; simple start script per OS).
+- No Docker (native install; installer on Windows, start script on Linux).
 
 ## Tech stack
 - Python ≥ 3.11. Dependencies (pinned in requirements.txt): `fastapi`, `uvicorn[standard]`, `requests`, `pytest` (dev). **No other deps.** Stdlib for everything else (subprocess, threading, queue, json, re, pathlib, urllib).
 - Frontend: single `static/index.html` + `static/app.js` + `static/style.css`. Vanilla JS, EventSource for SSE. No build step, no CDN.
-- External binaries (user installs, app locates + validates): `makemkvcon` (MakeMKV ≥ 1.17), `HandBrakeCLI` (≥ 1.6).
+- External binaries: `HandBrakeCLI` (≥ 1.6) only — bundled by the Windows installer, distro package on Linux. Located via `config.handbrake_candidates()`, bundled copy first.
+- `libdvdcss` for CSS decryption: user-supplied DLL beside HandBrakeCLI (Windows) or a distro package (Linux). Detected, never installed — there is no official binary release, and not redistributing it also keeps distribution (legally distinct from use) off the table.
+- Build tooling (Windows only): PyInstaller (onedir) + Inno Setup 6.
 
 ## Repo layout
 ```
@@ -20,40 +25,52 @@ disc2jelly/
 │   ├── main.py        # FastAPI app, routes, SSE          [Coder C]
 │   ├── jobs.py        # Job model, queue, pipeline runner  [Coder C]
 │   ├── config.py      # settings load/save/validate        [Coder A]
-│   ├── disc.py        # drive + disc detection             [Coder A]
-│   ├── makemkv.py     # makemkvcon wrapper + parser        [Coder A]
-│   ├── handbrake.py   # HandBrakeCLI wrapper + parser      [Coder A]
-│   ├── metadata.py    # TMDb client + Jellyfin naming      [Coder B]
-│   └── webdav.py      # WebDAV upload                      [Coder B]
+│   ├── drives.py      # optical drive detection (OS-level, no binary)
+│   ├── scan.py        # title enumeration via HandBrake --scan --json
+│   ├── handbrake.py   # HandBrakeCLI wrapper + parser
+│   ├── dvdcss.py      # libdvdcss detection + setup guidance
+│   ├── metadata.py    # TMDb movie + TV client, Jellyfin naming
+│   ├── destination.py # local folder / WebDAV output targets
+│   ├── webdav.py      # WebDAV upload (behind destination.py)
+│   └── _baked.py      # build-time defaults (generated, gitignored)
 ├── static/
 │   ├── index.html     # [Coder C]
 │   ├── app.js         # [Coder C]
 │   └── style.css      # [Coder C]
 ├── tests/
 │   ├── fixtures/      # recorded CLI outputs               [Coder A/B]
-│   ├── test_makemkv.py  [Coder A]
-│   ├── test_handbrake.py[Coder A]
-│   ├── test_config.py   [Coder A]
-│   ├── test_metadata.py [Coder B]
-│   └── test_webdav.py   [Coder B]
-├── requirements.txt   # [Orchestrator provides]
-├── README.md          # [Orchestrator, stage 4]
-├── start_linux.sh     # [Coder C]
-└── start_windows.bat  # [Coder C]
+│   └── test_*.py
+├── requirements.txt
+├── start_linux.sh
+└── start_windows.bat  # source-run fallback; end users get the installer
+build/
+├── gen_baked.py       # writes app/_baked.py from build_config.toml
+├── fetch_deps.py      # downloads + checksum-pins HandBrakeCLI
+├── disc2jelly.spec    # PyInstaller onedir
+├── disc2jelly.iss     # Inno Setup wizard (collects destination config)
+└── build_windows.ps1  # orchestrates the five build steps
 ```
 
 ## Pipeline & job model
 
-Stages (enum `Stage`): `DETECT → IDENTIFY → RIP → ENCODE → UPLOAD → CLEANUP → DONE` (+ `ERROR`, `CANCELLED`).
-`IDENTIFY` = TMDb match confirmed by user in UI before job starts; the job is only created after confirmation, so the running pipeline is RIP→ENCODE→UPLOAD→CLEANUP.
+Stages (enum `Stage`): `DETECT → IDENTIFY → ENCODE → UPLOAD → CLEANUP → DONE` (+ `ERROR`, `CANCELLED`).
+`IDENTIFY` = TMDb match confirmed by user in UI before job starts; the job is only created after confirmation, so the running pipeline is ENCODE→UPLOAD→CLEANUP.
+
+**There is no RIP stage.** HandBrake reads the disc device directly, so decrypt+rip+encode is one pass. This removes the ~50 GB intermediate scratch requirement and the `keep_mkv` option. Trade-off: a read failure mid-encode loses the job, with no raw intermediate to retry from.
 
 Job (in-memory, dataclass `Job` in jobs.py):
 ```
-id: str (uuid4 hex), disc_name: str, drive: str, title_indices: list[int],
-tmdb_id: int|None, movie_title: str, year: int|None, profile: str ("hevc"|"h264"),
+id: str (uuid4 hex), disc_name: str, drive: str, targets: list[TitleTarget],
+tmdb_id: int|None, display_title: str, year: int|None, profile: str ("hevc"|"h264"),
 status: Stage, created: float, error: str|None
+
+TitleTarget: title_index: int, relpath: str   # posix, relative to the destination root
 ```
-One job = one movie (main feature). Multi-title discs: user picks the main title (largest) in the UI; extra titles selectable. Multiple jobs queue sequentially (single optical drive anyway).
+`drive` is a device path (`/dev/sr0`, `D:\\`), not a MakeMKV handle.
+
+One `TitleTarget` = one output file. A film is one target (plus one per selected bonus title); a season disc is one target per episode. Relpaths are resolved **server-side at job creation**, where the TMDb data is in hand — the client never dictates a filesystem path. This is what makes movies and series the same shape to the pipeline.
+
+Encode and send run per target, so a season disc never stacks several finished files on the temp drive. Multiple jobs queue sequentially (single optical drive anyway).
 
 ### Event schema (SSE) — SACRED CONTRACT
 All modules report progress only via callback `emit(event: dict)`. Event dict:
@@ -70,7 +87,7 @@ All modules report progress only via callback `emit(event: dict)`. Event dict:
   "ts": 1712345678.9
 }
 ```
-- `percent` semantics: RIP uses MakeMKV PRGV total; ENCODE uses HandBrake task %; UPLOAD uses bytes-sent %.
+- `percent` semantics: ENCODE uses HandBrake task %; UPLOAD uses bytes-sent %.
 - jobs.py owns the event bus: `subscribe() -> queue.Queue`, `publish(event)`; main.py streams to clients. Last event per job is retained so late-joining clients see state.
 
 ### Config (`config.py`) — SACRED CONTRACT
@@ -78,51 +95,70 @@ JSON at platform path: Linux `~/.config/disc2jelly/config.json`, Windows `%APPDA
 ```python
 @dataclass
 class Config:
+    destination_kind: str = "local"  # "local" | "webdav"
+    local_path: str = ""          # empty = destination.DEFAULT_LOCAL_ROOT
     webdav_url: str = ""          # e.g. https://nas.example/remote.php/dav/files/me/movies-inbox
     webdav_user: str = ""
     webdav_password: str = ""
-    tmdb_api_key: str = ""        # v3 api_key
+    tmdb_api_key: str = ""        # v3 api_key; empty = _baked.TMDB_API_KEY
     temp_dir: str = ""            # default: <config dir>/work
-    keep_mkv: bool = False        # keep intermediate MakeMKV file
     encoder: str = "hevc"         # "hevc" | "h264"
     hevc_quality: int = 22        # RF/CRF
     h264_quality: int = 20
-    makemkv_path: str = ""        # empty = auto-detect
     handbrake_path: str = ""      # empty = auto-detect
     min_title_seconds: int = 600  # filter junk titles
 
 def load() -> Config
 def save(cfg: Config) -> None
 def config_path() -> Path
+def bundled_dir() -> Path          # next to the frozen exe, else ./vendor
 def find_binary(name: str, configured: str, os_candidates: list[str]) -> str|None
+def handbrake_candidates() -> list[str]   # bundled copy first
+def resolve_binaries(cfg: Config) -> str|None   # HandBrakeCLI path, or None
 ```
 `find_binary`: if configured path exists → it; else shutil.which; else probe candidate absolute paths; else None.
 
-### Disc detection (`disc.py`)
-```python
-@dataclass
-class Drive:  id: str; label: str; device: str   # id: "disc:0" style for makemkv
-def list_drives(makemkv_path: str) -> list[Drive]      # parse `makemkvcon -r info disc:9999` drive scan lines (DRV:index,visible,enabled,flags "drive name" "disc name")
-def disc_info(makemkv_path: str, drive_id: str) -> dict  # raw parsed CINFO/TINFO/SINFO tree
-@dataclass
-class Title: index: int; name: str; duration_s: int; chapters: int; size_bytes: int|None
-def list_titles(makemkv_path: str, drive_id: str, min_seconds: int) -> list[Title]
-```
-Timeouts: every subprocess call has `timeout=` and returns []/{} on failure rather than raising (caller emits error event).
-- Drive scan: `makemkvcon -r --cache=1 info disc:9999`; parse `DRV:index,status,999,flags,"drive name","disc label"[,"/dev/srN"]`. status: 2 = disc ready, 0 = empty, 1 = tray open, 3 = loading, 256 = absent. flags: 1 = DVD, 12/28 = Blu-ray. `TCOUNT:0` + `MSG:5010` at end of enumeration is NORMAL, not an error.
-- Title fields from `info disc:N`: name=TINFO:x,2 ; chapters=TINFO:x,8 ; duration=TINFO:x,9 as `H:MM:SS` text (parse to seconds); size=TINFO:x,11 (bytes, quoted). Disc name prefer CINFO:2, fallback CINFO:32 (volume label) / DRV field 6.
+Build-time defaults live in generated `app/_baked.py` (TMDb key, destination kind, local path, WebDAV URL/user). Imported with a try/except fallback so a source checkout works with none of it. **The WebDAV password is not baked** unless `build_windows.ps1 -BakePassword` is used: PyInstaller does not obfuscate and any compiled-in string is recoverable with `strings`. The Inno Setup wizard writes the password to `%APPDATA%\disc2jelly\config.json` on the target machine instead.
 
-### MakeMKV wrapper (`makemkv.py`)
+### Drive detection (`drives.py`)
 ```python
-def rip(makemkv_path: str, drive_id: str, title: str|int, out_dir: Path,
-        emit: Callable[[dict], None], cancel: threading.Event) -> Path
+@dataclass
+class Drive: device: str; label: str; has_disc: bool   # device: "/dev/sr0" | "D:\\"
+def list_drives() -> list[Drive]
 ```
-- Runs `makemkvcon -r --progress=-same --minlength=<cfg.min_title_seconds> mkv <drive_id> <title> <out_dir>`. Env: `LC_ALL=C`.
-- Robot line formats (verified, see /mnt/agents/output/info.md §1): `PRGT:code,id,"name"`, `PRGC:code,id,"name"`, `PRGV:current,total,max` — **max is constant 65536**, field index 1 = overall job progress, field 0 = current sub-task (NOT monotonic). percent = field1/65536*100. Emit stage "RIP" with detail from PRGC caption.
-- **Parse respecting quotes** (values can contain commas) — use a small CSV-aware splitter, never `line.split(',')`.
-- **Success detection**: exit code 0 is NOT sufficient. Only `MSG:5036` = full success; `MSG:5037` = partial (N saved / M failed → treat as error); verify output file exists. MSG layout `MSG:code,flags,count,"msg","fmt",params...` — match by code, never by text.
-- Returns path of produced .mkv (largest .mkv in out_dir after run). Raises `RipError` on failure or cancel (cancel → terminate process, kill fallback after 5s).
-- Pure parser function `parse_robot_line(line: str) -> dict|None` exposed for tests (returns {"token": "PRGV"|"MSG"|..., fields parsed}).
+No external binary and no subprocess. Windows: kernel32 `GetLogicalDrives` / `GetDriveTypeW` (DRIVE_CDROM = 5) / `GetVolumeInformationW` — the volume label doubles as the disc label and is what feeds TMDb. Linux: `/dev/sr*`, media presence from `/sys/block/<n>/size` (0 sectors = empty tray), label from the `/dev/disk/by-label` symlinks. Returns [] rather than raising.
+
+### Title enumeration (`scan.py`)
+```python
+@dataclass
+class Title: index: int; name: str; duration_s: int; chapters: int
+              size_bytes: int|None; duplicate_of: int|None
+def scan_titles(handbrake_path: str, device: str, min_seconds: int) -> list[Title]
+def main_feature(titles: list[Title]) -> Title|None
+```
+Runs `HandBrakeCLI -i <device> --title 0 --scan --json` and decodes the `JSON Title Set:` block out of the surrounding libhb log. Title indices are **1-based**; there is no per-title byte size, so `size_bytes` is always None. Every call has a timeout and returns [] on failure.
+
+Titles with identical `(duration_s, chapters)` are **flagged via `duplicate_of`, not dropped** — DVDs routinely expose the main feature more than once, but on a season disc two genuine episodes could collide and losing an episode is worse than showing a greyed-out row. `main_feature` ignores flagged duplicates.
+
+### libdvdcss (`dvdcss.py`)
+```python
+def is_available(bundled_dir=None) -> bool
+def hint(bundled_dir=None) -> str
+def require(bundled_dir=None) -> None        # raises DvdCssError with the hint
+```
+Detection only — this module never installs anything. Windows: `libdvdcss-2.dll` beside HandBrakeCLI. Linux: the system library via `ctypes.util.find_library`. When it is missing, `hint()` returns platform-specific instructions naming the exact target folder, which `/api/health` passes to the UI banner.
+
+**There is no acquisition path, by necessity, not just by policy.** VideoLAN publishes libdvdcss as source tarballs only; there is no `win64/` directory and never has been, and VLC's Windows build links libdvdcss statically into `libdvdread_plugin.dll` rather than shipping a standalone DLL. The user supplies the file. Not redistributing it also keeps the original legal position intact — distributing a circumvention library is legally distinct from using one.
+
+### Destinations (`destination.py`)
+```python
+class Destination(Protocol):
+    def send(self, src: Path, rel_dest: str, emit, cancel, job_id: str) -> None
+class LocalDestination:  root: Path    # DEFAULT_LOCAL_ROOT = ~/Videos/Disc2Jelly
+class WebDavDestination: client        # wraps webdav.WebDAVClient unchanged
+def for_config(cfg) -> Destination
+```
+`LocalDestination` copies in 4 MiB chunks with the same 8 MiB progress granularity as the WebDAV path, honours the cancel event, removes a partial file on failure, and **refuses any relpath that resolves outside the root**.
 
 ### HandBrake wrapper (`handbrake.py`)
 ```python
@@ -178,12 +214,18 @@ Pipeline per job (worker thread, sequential): RIP each selected title → ENCODE
 ### HTTP API (`main.py`)
 ```
 GET  /                       → static/index.html
-GET  /api/health             → {ok, binaries: {makemkv, handbrake}, config_ok}
-GET  /api/drives             → list[Drive] (rescans every call, 20s timeout)
-GET  /api/drives/{id}/titles → list[Title]
-GET  /api/tmdb/search?q=...  → list[MovieMatch] (400 if no api key)
+GET  /api/health             → {ok, binaries:{handbrake}, destination_ok, dvdcss_ok,
+                                dvdcss_hint, tmdb_key_set, config_ok}
+GET  /api/drives             → list[Drive] (rescans every call)
+GET  /api/titles?device=...  → list[Title]  (503 if HandBrakeCLI missing)
+GET  /api/disc/hint?label=   → DiscHint {kind, title, season, disc}
+GET  /api/tmdb/search?q=&kind=movie|tv → list[MovieMatch|ShowMatch]
+GET  /api/tmdb/tv/{id}/season/{n}      → list[EpisodeInfo]
 GET  /api/jobs               → list of jobs + last events
-POST /api/jobs               → body {drive, titles:[int], tmdb_id?, title, year?, profile} → Job
+POST /api/jobs               → body {drive, kind, tmdb_id?, title, year?, profile,
+                                titles:[int]                       # kind=movie
+                                episodes:[{title_index, season, episode, name}]  # kind=series
+                              } → Job. Relpaths are built server-side.
 POST /api/jobs/{id}/cancel   → {ok}
 GET  /api/events             → SSE stream (text/event-stream, replay of last events on connect)
 GET  /api/config             → Config as JSON (password masked)
@@ -194,19 +236,20 @@ Run: `python -m app.main` starts uvicorn on 127.0.0.1:8642 and opens browser.
 
 ### Frontend (static/) — wife-proof
 Sections top→bottom:
-1. **Status bar**: app health dots (MakeMKV ✓/✗, HandBrake ✓/✗, WebDAV ✓/✗, TMDb ✓/✗) + gear icon opening Settings modal (all config fields, "Test WebDAV" button, Save).
-2. **Disc panel**: "Rescan" button; when disc found: disc label, title dropdown (duration+chapters shown, main title preselected), TMDb suggestion card ("We think this is: **Title (Year)** — [Use] / [Search other]" with manual search box + fully manual title/year fields as fallback), profile select (HEVC default), big **"RIP & UPLOAD"** button.
+1. **Status bar**: app health dots (libdvdcss ✓/✗, HandBrake ✓/✗, Destination ✓/✗, TMDb ✓/✗) + gear icon opening Settings modal. A red libdvdcss dot also shows a banner with `dvdcss_hint`, naming the folder the DLL belongs in.
+2. **Disc panel**: "Rescan" button; when disc found: disc label, a **film / TV episodes** toggle preselected from `/api/disc/hint`, then either the film title dropdown + extras, or the series episode table (one row per title: tick box, episode number, TMDb episode name; "Number them" fills sequentially from a starting number). TMDb suggestion card ("We think this is: **Title (Year)** — [Use] / [Search other]" with manual search box + fully manual title/year fields as fallback), profile select (HEVC default), big **"RIP & UPLOAD"** button.
 3. **Queue panel**: per job a card with movie name and 3 stacked progress bars (Rip / Encode / Upload) with % and fps/ETA on encode, status badge, cancel button, error text if failed.
 4. **Log pane** (collapsible): last 200 raw log lines.
 Design: warm, low-saturation (cream background #faf7f2, dark slate text, muted teal accent #3f7f77, soft red for errors), generous whitespace, system font stack, big click targets (≥44px), no jargon (labels: "Disc", "Movie", "Save to server", not "transcode/HEVC" — advanced settings behind a "Advanced" details element).
 
 ## Cross-platform rules
-- All paths via pathlib; never assume `/`; subprocess lists (no shell=True); binary candidates: Windows `C:/Program Files (x86)/MakeMKV/makemkvcon.exe`, `C:/Program Files/HandBrake/HandBrakeCLI.exe`; Linux `/usr/bin/makemkvcon`, `/usr/bin/HandBrakeCLI`, plus PATH lookup.
+- All paths via pathlib; never assume `/`; subprocess lists (no shell=True); binary candidates: the bundled `HandBrakeCLI.exe` beside the executable first, then Windows `C:/Program Files/HandBrake/HandBrakeCLI.exe`; Linux `/usr/bin/HandBrakeCLI`, plus PATH lookup.
 - Process termination cross-platform (Popen.terminate then kill fallback).
 - No fcntl, no signal handlers beyond what works on Windows.
 
 ## Testing
-- pytest. Parser tests use fixtures in tests/fixtures (recorded makemkvcon robot output, HandBrakeCLI stdout incl. `\r` updates). Naming tests cover umlauts, colons, year-missing. WebDAV tests mock requests. Target: all pure functions covered; wrappers tested with mocked subprocess.
+- pytest. Parser tests use fixtures in tests/fixtures (HandBrakeCLI `--scan --json` output, HandBrakeCLI stdout incl. `\r` updates). Naming tests cover umlauts, colons, year-missing, and Jellyfin episode paths. Drive detection is tested with a fake kernel32 object (Windows) and a temp-dir fake of `/dev` + `/sys/block` + `/dev/disk/by-label` (Linux), so both platforms are covered from either host. Target: all pure functions covered; wrappers tested with mocked subprocess.
+- `tests/js_badge_logic.test.mjs` runs app.js in a node vm sandbox (skipped when node is absent).
 
 ## Git workflow (per vibecoding-general-swarm)
 Shared repo: /mnt/agents/output/project. Each coder: `git worktree add $HOME/work-<branch> <branch>`, implement, run their tests, commit on branch. Orchestrator merges all into main, runs full suite, fixes integration.
