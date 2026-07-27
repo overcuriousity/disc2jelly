@@ -1,8 +1,18 @@
 """Disc2Jelly configuration: load/save/validate + binary discovery.
 
+Settings come from four layers, each overriding the one before it:
+
+  1. the field defaults below
+  2. app/_baked.py         — compiled in by build/gen_baked.py, absent in a checkout
+  3. install_defaults.json — written by the Inno Setup wizard on the target machine
+  4. config.json           — the user's own settings, the only file save() writes
+
+The installer deliberately does not touch config.json. Reinstalling or upgrading
+rewrites layer 3 only, so a user's own settings can never be destroyed by it.
+
 JSON at platform path:
-  Linux   ~/.config/disc2jelly/config.json
-  Windows %APPDATA%/disc2jelly/config.json
+  Linux   ~/.config/disc2jelly/{config,install_defaults}.json
+  Windows %APPDATA%/disc2jelly/{config,install_defaults}.json
 """
 
 from __future__ import annotations
@@ -11,21 +21,40 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 APP_DIR_NAME = "disc2jelly"
 CONFIG_FILENAME = "config.json"
+INSTALL_DEFAULTS_FILENAME = "install_defaults.json"
+
+try:  # generated at build time by build/gen_baked.py; absent in a source checkout
+    from . import _baked
+except ImportError:  # pragma: no cover - exercised by the absence of the module
+    _baked = None  # type: ignore[assignment]
+
+
+def baked_default(name: str, fallback: str = "") -> str:
+    """A build-time default, or `fallback` when nothing was baked in."""
+    value = getattr(_baked, name, "") if _baked is not None else ""
+    return (value or "").strip() or fallback
 
 
 @dataclass
 class Config:
-    destination_kind: str = "local"  # "local" | "webdav"
-    local_path: str = ""          # empty = destination.DEFAULT_LOCAL_ROOT
-    webdav_url: str = ""          # e.g. https://nas.example/remote.php/dav/files/me/movies-inbox
-    webdav_user: str = ""
-    webdav_password: str = ""
-    tmdb_api_key: str = ""        # v3 api_key (or v4 read token); empty = baked default
+    # The string fields the installer can pre-seed read their defaults from
+    # _baked.py, so a build with baked values works before any file exists.
+    destination_kind: str = field(  # "local" | "webdav"
+        default_factory=lambda: baked_default("DESTINATION_KIND", "local"))
+    local_path: str = field(       # empty = destination.DEFAULT_LOCAL_ROOT
+        default_factory=lambda: baked_default("LOCAL_PATH"))
+    # e.g. https://nas.example/remote.php/dav/files/me/movies-inbox
+    webdav_url: str = field(default_factory=lambda: baked_default("WEBDAV_URL"))
+    webdav_user: str = field(default_factory=lambda: baked_default("WEBDAV_USER"))
+    webdav_password: str = field(
+        default_factory=lambda: baked_default("WEBDAV_PASSWORD"))
+    # v3 api_key (or v4 read token)
+    tmdb_api_key: str = field(default_factory=lambda: baked_default("TMDB_API_KEY"))
     temp_dir: str = ""            # default: <config dir>/work
     encoder: str = "hevc"         # "hevc" | "h264"
     hevc_quality: int = 22        # RF/CRF
@@ -50,33 +79,53 @@ def config_path() -> Path:
     return config_dir() / CONFIG_FILENAME
 
 
-def load(path: Path | None = None) -> Config:
-    """Load config from disk; missing/corrupt file yields defaults."""
-    p = path or config_path()
-    cfg = Config()
+def install_defaults_path() -> Path:
+    """Defaults written by the installer wizard. Never written by the app."""
+    return config_dir() / INSTALL_DEFAULTS_FILENAME
+
+
+def _read_json(path: Path) -> dict:
+    """Decode a settings file; missing, unreadable or corrupt yields {}."""
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return cfg
-    if not isinstance(raw, dict):
-        return cfg
-    known = {f.name: f for f in fields(Config)}
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _apply(cfg: Config, raw: dict) -> Config:
+    """Overlay `raw` onto `cfg`, dropping unknown keys and mismatched types."""
+    known = {f.name for f in fields(Config)}
     data: dict = {}
     for key, value in raw.items():
         if key not in known:
             continue
-        default = known[key].default
-        # Coerce simple scalar types; drop mismatched types silently.
-        if isinstance(default, bool):
+        # Compare against the live value, not the field's declared default:
+        # default_factory fields report dataclasses.MISSING for .default.
+        current = getattr(cfg, key)
+        if isinstance(current, bool):
             if isinstance(value, bool):
                 data[key] = value
-        elif isinstance(default, int):
+        elif isinstance(current, int):
             if isinstance(value, int) and not isinstance(value, bool):
                 data[key] = value
         else:  # str
             if isinstance(value, str):
                 data[key] = value
-    return Config(**data)
+    return replace(cfg, **data) if data else cfg
+
+
+def load(path: Path | None = None, defaults_path: Path | None = None) -> Config:
+    """Load settings, layering installer defaults under the user's own file.
+
+    An explicit `path` implies its sibling install_defaults.json unless
+    `defaults_path` says otherwise, so the two layers stay together.
+    """
+    user_path = path or config_path()
+    if defaults_path is None:
+        defaults_path = user_path.parent / INSTALL_DEFAULTS_FILENAME
+    cfg = _apply(Config(), _read_json(defaults_path))
+    return _apply(cfg, _read_json(user_path))
 
 
 def save(cfg: Config, path: Path | None = None) -> None:
