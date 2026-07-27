@@ -139,21 +139,23 @@ def save(cfg: Config, path: Path | None = None) -> None:
 def find_binary(name: str, configured: str, os_candidates: list[str]) -> str | None:
     """Locate an external binary.
 
-    Order: configured path if it exists → shutil.which(name) → probe
-    candidate absolute paths → None.
+    Order: configured path if it exists → probe candidate absolute paths →
+    shutil.which(name) → None.
+
+    Candidates come before PATH deliberately. handbrake_candidates() lists the
+    bundled copy first, and the installer ships a known-good version; letting
+    PATH win would hand an arbitrary system HandBrake the job on any machine
+    that happens to have one.
     """
     if configured:
         p = Path(os.path.expandvars(configured)).expanduser()
         if p.is_file():
             return str(p)
-    found = shutil.which(name)
-    if found:
-        return found
     for cand in os_candidates:
         p = Path(os.path.expandvars(cand)).expanduser()
         if p.is_file():
             return str(p)
-    return None
+    return shutil.which(name)
 
 
 def bundled_dir() -> Path:

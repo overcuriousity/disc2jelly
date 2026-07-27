@@ -229,6 +229,20 @@ def test_find_binary_none_when_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.find_binary("HandBrakeCLI", "", ["/nope/a", "/nope/b"]) is None
 
 
+def test_find_binary_prefers_a_candidate_over_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The bundled binary is the known-good one; a stray PATH entry is not."""
+    monkeypatch.setattr(config.shutil, "which", lambda name: "/usr/bin/HandBrakeCLI")
+    bundled = tmp_path / "HandBrakeCLI"
+    bundled.write_text("x", encoding="utf-8")
+    assert config.find_binary("HandBrakeCLI", "", [str(bundled)]) == str(bundled)
+
+
+def test_handbrake_candidates_lead_with_the_bundled_copy() -> None:
+    assert config.handbrake_candidates()[0].startswith(str(config.bundled_dir()))
+
+
 def test_candidates_cover_both_platforms() -> None:
     hb = config.handbrake_candidates()
     assert hb
