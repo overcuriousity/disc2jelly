@@ -135,6 +135,36 @@ def test_install_defaults_are_type_checked_too(tmp_path: Path) -> None:
     assert cfg.webdav_url == "https://x"
 
 
+def test_ascii_escaped_install_defaults_decode_to_the_original_text(
+        tmp_path: Path) -> None:
+    """The contract build/disc2jelly.iss's JsonEscape has to satisfy.
+
+    SaveStringToFile writes the system ANSI codepage; this file is read as
+    UTF-8. Escaping every non-ASCII character as \\uXXXX makes the two agree,
+    and load() must recover the original umlauts. Before the fix the file was
+    written raw and the resulting UnicodeDecodeError -- a ValueError subclass
+    -- was swallowed, silently discarding every installer-collected setting.
+    """
+    (tmp_path / "install_defaults.json").write_text(
+        '{\n'
+        '  "destination_kind": "local",\n'
+        '  "local_path": "D:\\\\Filme\\\\J\\u00f6rg"\n'
+        '}\n',
+        encoding="ascii",
+    )
+    cfg = config.load(path=tmp_path / "config.json")
+    assert cfg.local_path == "D:\\Filme\\Jörg"
+
+
+def test_raw_non_utf8_install_defaults_do_not_take_the_app_down(
+        tmp_path: Path) -> None:
+    """An ANSI-encoded file still degrades to defaults rather than raising."""
+    (tmp_path / "install_defaults.json").write_bytes(
+        b'{"local_path": "D:\\\\Filme\\\\J\xf6rg"}')  # cp1252 umlaut
+    cfg = config.load(path=tmp_path / "config.json")
+    assert cfg.local_path == ""
+
+
 def test_install_defaults_path_sits_beside_config(monkeypatch: pytest.MonkeyPatch,
                                                   tmp_path: Path) -> None:
     if sys.platform.startswith("win"):

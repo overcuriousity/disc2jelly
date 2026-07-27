@@ -5,7 +5,9 @@
 ;
 ; The WebDAV URL and username arrive pre-filled from the baked defaults (they
 ; are not secret). The password is typed here and written to the per-user
-; config on this machine — it is deliberately not compiled into the binary.
+; install_defaults.json on this machine — it is deliberately not compiled into
+; the binary. config.py layers that file underneath the user's own config.json,
+; so re-running setup never overwrites settings changed in the app.
 ;
 ; Build:  iscc build\disc2jelly.iss
 
@@ -106,28 +108,46 @@ begin
   if PageID = WebdavPage.ID then Result := not UseWebdav;
 end;
 
+{ Escape for JSON, and force the result to pure ASCII.
+
+  SaveStringToFile writes the system ANSI codepage while config.py reads
+  UTF-8, so an umlaut in a path, user name or password used to produce a
+  file Python could not decode -- and config.load swallows the resulting
+  ValueError, so the whole configuration vanished with no error at all.
+  Emitting every non-ASCII character as \uXXXX sidesteps the codepage
+  entirely; each UTF-16 code unit maps to one escape, which is valid JSON
+  including for surrogate pairs. Preferred over SaveStringToUTF8File,
+  which prepends a BOM that json.loads rejects. }
 function JsonEscape(const S: String): String;
 var
-  I: Integer;
+  I, Code: Integer;
   Ch: Char;
 begin
   Result := '';
   for I := 1 to Length(S) do
   begin
     Ch := S[I];
+    Code := Ord(Ch);
     if Ch = '\' then Result := Result + '\\'
     else if Ch = '"' then Result := Result + '\"'
+    else if (Code < 32) or (Code > 126) then
+      Result := Result + Format('\u%.4x', [Code])
     else Result := Result + Ch;
   end;
 end;
 
+{ Write the installer's choices to install_defaults.json, NOT config.json.
+
+  config.py layers this file underneath the user's own config.json, so
+  reinstalling or upgrading can never destroy settings the user changed
+  in the app. }
 procedure WriteConfig;
 var
-  ConfigDir, ConfigFile, Json: String;
+  ConfigDir, DefaultsFile, Json: String;
 begin
   ConfigDir := ExpandConstant('{userappdata}\disc2jelly');
   ForceDirectories(ConfigDir);
-  ConfigFile := ConfigDir + '\config.json';
+  DefaultsFile := ConfigDir + '\install_defaults.json';
 
   if UseWebdav then
     Json :=
@@ -144,7 +164,7 @@ begin
       '  "local_path": "' + JsonEscape(LocalPage.Values[0]) + '"' + #13#10 +
       '}' + #13#10;
 
-  SaveStringToFile(ConfigFile, Json, False);
+  SaveStringToFile(DefaultsFile, Json, False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
