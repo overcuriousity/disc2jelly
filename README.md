@@ -65,6 +65,15 @@ powershell -ExecutionPolicy Bypass -File build\build_windows.ps1
 
 Needs [Inno Setup 6](https://jrsoftware.org/isdl.php). Output lands in `dist\`.
 
+If the HandBrakeCLI download fails with `CERTIFICATE_VERIFY_FAILED` (a
+TLS-inspecting proxy or antivirus, or a Windows cert store missing the chain),
+download the zip in a browser and hand it over — the pinned checksum is still
+enforced:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build\build_windows.ps1 -HandBrakeArchive C:\path\HandBrakeCLI-1.9.2-win-x86_64.zip
+```
+
 HandBrakeCLI is pinned to a SHA-256 in `build/fetch_deps.py`, which refuses to build if the
 download does not match. To move to a new HandBrake release, bump `HANDBRAKE_VERSION`, run
 `python build\fetch_deps.py --print-hashes`, and paste the printed digest into

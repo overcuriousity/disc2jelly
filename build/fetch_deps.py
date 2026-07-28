@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import ssl
 import sys
+import urllib.error
 import urllib.request
 import zipfile
 from io import BytesIO
@@ -47,11 +48,43 @@ LICENCE_MEMBERS = {"doc/COPYING": "COPYING", "doc/LICENSE": "LICENSE"}
 TIMEOUT_S = 300
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Verified TLS context, preferring certifi's CA bundle.
+
+    Python on Windows verifies against the Windows ROOT store, which on a
+    fresh or locked-down machine can lack the issuing chain — the download
+    then dies with CERTIFICATE_VERIFY_FAILED. certifi arrives with requests
+    (requirements.txt) and carries the roots itself. Verification is never
+    disabled: the pinned SHA-256 guards content, not transport.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def fetch(url: str) -> bytes:
     print(f"downloading {url}")
-    context = ssl.create_default_context()
-    with urllib.request.urlopen(url, timeout=TIMEOUT_S, context=context) as resp:
-        return resp.read()
+    try:
+        with urllib.request.urlopen(
+            url, timeout=TIMEOUT_S, context=_ssl_context()
+        ) as resp:
+            return resp.read()
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            raise SystemExit(
+                f"TLS verification failed for {url}: {reason}\n"
+                f"Install certifi (`python -m pip install certifi`) so this "
+                f"script uses its CA bundle. If it is already installed, a "
+                f"TLS-inspecting proxy or antivirus is rewriting the "
+                f"connection — export SSL_CERT_FILE pointing at its root "
+                f"certificate, or download the archive in a browser and pass "
+                f"it to this script with --archive <path> (the pinned "
+                f"checksum is still enforced)."
+            ) from exc
+        raise SystemExit(f"download failed for {url}: {reason}") from exc
 
 
 def verify(payload: bytes, expected: str, what: str, allow_unpinned: bool) -> None:
@@ -107,9 +140,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="download and print digests, install nothing")
     parser.add_argument("--allow-unpinned", action="store_true",
                         help="proceed without a pinned checksum (not for release)")
+    parser.add_argument("--archive", type=Path,
+                        help="use this already-downloaded HandBrakeCLI zip "
+                             "instead of downloading (still checksum-verified)")
     args = parser.parse_args(argv)
 
-    payload = fetch(HANDBRAKE_URL)
+    if args.archive:
+        if not args.archive.is_file():
+            raise SystemExit(f"archive not found: {args.archive}")
+        print(f"using local archive {args.archive}")
+        payload = args.archive.read_bytes()
+    else:
+        payload = fetch(HANDBRAKE_URL)
 
     if args.print_hashes:
         print(f"\nHANDBRAKE_SHA256 = \"{hashlib.sha256(payload).hexdigest()}\"")

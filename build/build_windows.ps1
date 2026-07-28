@@ -17,32 +17,52 @@
   Allow HandBrakeCLI to be downloaded without a pinned SHA-256. Use once, to
   discover the digest; never for a build you hand to someone.
 
+.PARAMETER HandBrakeArchive
+  Path to an already-downloaded HandBrakeCLI-<version>-win-x86_64.zip, for
+  machines where the download fails (TLS-inspecting proxy, no internet). The
+  pinned checksum is still verified.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File build\build_windows.ps1
 #>
 [CmdletBinding()]
 param(
     [switch]$BakePassword,
-    [switch]$AllowUnpinned
+    [switch]$AllowUnpinned,
+    [string]$HandBrakeArchive
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+# $ErrorActionPreference does not apply to native commands in Windows
+# PowerShell, so a failing python/iscc would otherwise let the build carry on
+# and ship a broken installer. Every external call goes through this.
+# The command goes in a script block so its arguments are parsed as native
+# command arguments (a bare -m would otherwise bind as a parameter name).
+function Invoke-Step {
+    param([string]$What, [scriptblock]$Body)
+    & $Body
+    if ($LASTEXITCODE -ne 0) {
+        throw "$What failed with exit code $LASTEXITCODE. Build aborted."
+    }
+}
+
 Write-Host "== Disc2Jelly Windows build ==" -ForegroundColor Cyan
 
 # 1. Build dependencies -------------------------------------------------------
 Write-Host "`n[1/5] Installing build dependencies..." -ForegroundColor Cyan
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install pyinstaller
+Invoke-Step "pip install --upgrade pip" { python -m pip install --upgrade pip }
+Invoke-Step "pip install -r requirements.txt" { python -m pip install -r requirements.txt }
+Invoke-Step "pip install pyinstaller" { python -m pip install pyinstaller certifi }
 
 # 2. Third-party binaries -----------------------------------------------------
 Write-Host "`n[2/5] Fetching HandBrakeCLI..." -ForegroundColor Cyan
 $fetchArgs = @("build\fetch_deps.py")
 if ($AllowUnpinned) { $fetchArgs += "--allow-unpinned" }
-python @fetchArgs
+if ($HandBrakeArchive) { $fetchArgs += @("--archive", $HandBrakeArchive) }
+Invoke-Step "HandBrakeCLI fetch" { python @fetchArgs }
 
 # 3. Baked defaults -----------------------------------------------------------
 Write-Host "`n[3/5] Generating baked defaults..." -ForegroundColor Cyan
@@ -51,16 +71,18 @@ if ($BakePassword) {
     Write-Warning "Baking a WebDAV password into the binary. It is recoverable with 'strings'. Do not publish this installer."
     $genArgs += "--bake-password"
 }
-python @genArgs
+Invoke-Step "baked defaults" { python @genArgs }
 
 # 4. PyInstaller --------------------------------------------------------------
 Write-Host "`n[4/5] Running PyInstaller..." -ForegroundColor Cyan
 if (Test-Path "dist\Disc2Jelly") { Remove-Item -Recurse -Force "dist\Disc2Jelly" }
-pyinstaller build\disc2jelly.spec --noconfirm --distpath dist --workpath build\pyi
+# `python -m PyInstaller`, not the `pyinstaller` shim: pip's Scripts directory
+# is frequently not on PATH, especially for Microsoft Store Python.
+Invoke-Step "PyInstaller" { python -m PyInstaller build\disc2jelly.spec --noconfirm --distpath dist --workpath build\pyi }
 
 # 5. Inno Setup ---------------------------------------------------------------
 Write-Host "`n[5/5] Building the installer..." -ForegroundColor Cyan
-$iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+$iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
     $candidates = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -84,7 +106,7 @@ print(json.dumps(tomllib.load(open('build_config.toml','rb'))))
     if ($cfg.local_path)  { $defs += "/DDefaultLocalPath=$($cfg.local_path)" }
 }
 
-& $iscc @defs "build\disc2jelly.iss"
+Invoke-Step "Inno Setup" { & $iscc @defs "build\disc2jelly.iss" }
 
 Write-Host "`nDone. Installer is in dist\" -ForegroundColor Green
 Write-Host "Note: the installer is unsigned, so SmartScreen will warn once." -ForegroundColor Yellow
