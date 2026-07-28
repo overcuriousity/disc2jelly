@@ -483,7 +483,11 @@ def main() -> None:
     threading.Timer(
         1.0, lambda: webbrowser.open(f"http://{HOST}:{PORT}/")
     ).start()
-    uvicorn.run("app.main:app", host=HOST, port=PORT, log_level="info")
+    # The app object, not an "app.main:app" import string: the string makes
+    # uvicorn import this module a second time, and the served copy would have
+    # its own JobManager — the one started above would sit idle. It also does
+    # not resolve inside the frozen build.
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 
 if __name__ == "__main__":

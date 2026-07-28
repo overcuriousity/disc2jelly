@@ -26,6 +26,10 @@
 #ifndef DefaultLocalPath
   #define DefaultLocalPath ""
 #endif
+; "local" or "webdav" — preselects the destination page.
+#ifndef DefaultDestinationKind
+  #define DefaultDestinationKind "local"
+#endif
 
 [Setup]
 AppName={#AppName}
@@ -73,7 +77,10 @@ begin
     'Choose one:', True, False);
   DestPage.Add('A folder on this PC or the network (simplest)');
   DestPage.Add('A WebDAV server');
-  DestPage.Values[0] := True;
+  if '{#DefaultDestinationKind}' = 'webdav' then
+    DestPage.Values[1] := True
+  else
+    DestPage.Values[0] := True;
 
   LocalPage := CreateInputDirPage(DestPage.ID,
     'Destination folder', 'Where should Disc2Jelly save films?',

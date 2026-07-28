@@ -27,12 +27,26 @@ for extra in ("COPYING", "COPYING.txt", "LICENSE"):
     if (vendor / extra).is_file():
         datas.append((str(vendor / extra), "."))
 
+# run_app.py, not app/main.py: an entry script runs as __main__ with no parent
+# package, so main.py's `from .jobs import ...` would fail at startup.
 a = Analysis(
-    [str(APP_ROOT / "app" / "main.py")],
+    [str(APP_ROOT / "run_app.py")],
     pathex=[str(APP_ROOT)],
     binaries=binaries,
     datas=datas,
     hiddenimports=[
+        # main.py imports these lazily inside handlers (see its docstring);
+        # spell them out so a missed one cannot ship as a runtime ImportError.
+        "app.config",
+        "app.destination",
+        "app.drives",
+        "app.dvdcss",
+        "app.handbrake",
+        "app.jobs",
+        "app.main",
+        "app.metadata",
+        "app.scan",
+        "app.webdav",
         "uvicorn.logging",
         "uvicorn.loops.auto",
         "uvicorn.protocols.http.auto",

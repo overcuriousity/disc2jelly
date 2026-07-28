@@ -101,9 +101,19 @@ if (Test-Path "build_config.toml") {
 import tomllib, json
 print(json.dumps(tomllib.load(open('build_config.toml','rb'))))
 "@ | ConvertFrom-Json
-    if ($cfg.webdav_url)  { $defs += "/DDefaultWebdavUrl=$($cfg.webdav_url)" }
-    if ($cfg.webdav_user) { $defs += "/DDefaultWebdavUser=$($cfg.webdav_user)" }
-    if ($cfg.local_path)  { $defs += "/DDefaultLocalPath=$($cfg.local_path)" }
+    if ($cfg.webdav_url)       { $defs += "/DDefaultWebdavUrl=$($cfg.webdav_url)" }
+    if ($cfg.webdav_user)      { $defs += "/DDefaultWebdavUser=$($cfg.webdav_user)" }
+    if ($cfg.local_path)       { $defs += "/DDefaultLocalPath=$($cfg.local_path)" }
+    if ($cfg.destination_kind) { $defs += "/DDefaultDestinationKind=$($cfg.destination_kind)" }
+    if ($defs.Count -gt 0) {
+        Write-Host "Wizard defaults from build_config.toml:" -ForegroundColor Cyan
+        $defs | ForEach-Object { Write-Host "  $_" }
+    } else {
+        Write-Warning "build_config.toml has no destination values; the installer wizard starts empty."
+    }
+} else {
+    # Silence here used to look like the settings had simply been ignored.
+    Write-Warning "No build_config.toml (copy build_config.example.toml). No TMDb key is baked in and the installer wizard starts empty."
 }
 
 Invoke-Step "Inno Setup" { & $iscc @defs "build\disc2jelly.iss" }

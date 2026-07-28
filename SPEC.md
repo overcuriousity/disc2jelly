@@ -41,6 +41,8 @@ disc2jelly/
 │   ├── fixtures/      # recorded CLI outputs               [Coder A/B]
 │   └── test_*.py
 ├── requirements.txt
+├── run_app.py         # PyInstaller entry point (app/main.py cannot be one:
+│                      # an entry script is __main__, so its relative imports fail)
 ├── start_linux.sh
 └── start_windows.bat  # source-run fallback; end users get the installer
 build/
