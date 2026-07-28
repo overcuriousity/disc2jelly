@@ -94,32 +94,16 @@ if (-not $iscc) {
     throw "Inno Setup 6 not found. Install it from https://jrsoftware.org/isdl.php"
 }
 
-# Pass the non-secret defaults through so the wizard fields arrive pre-filled.
-$defs = @()
-if (Test-Path "build_config.toml") {
-    $cfg = python -c @"
-import tomllib, json
-print(json.dumps(tomllib.load(open('build_config.toml','rb'))))
-"@ | ConvertFrom-Json
-    if ($cfg.webdav_url)       { $defs += "/DDefaultWebdavUrl=$($cfg.webdav_url)" }
-    if ($cfg.webdav_user)      { $defs += "/DDefaultWebdavUser=$($cfg.webdav_user)" }
-    if ($cfg.local_path)       { $defs += "/DDefaultLocalPath=$($cfg.local_path)" }
-    if ($cfg.destination_kind) { $defs += "/DDefaultDestinationKind=$($cfg.destination_kind)" }
-    # With the password compiled in there is nothing left to ask, so the
-    # wizard skips its WebDAV page entirely.
-    if ($BakePassword -and $cfg.webdav_password) { $defs += "/DHasBakedPassword=1" }
-    if ($defs.Count -gt 0) {
-        Write-Host "Wizard defaults from build_config.toml:" -ForegroundColor Cyan
-        $defs | ForEach-Object { Write-Host "  $_" }
-    } else {
-        Write-Warning "build_config.toml has no destination values; the installer wizard starts empty."
-    }
-} else {
+# Wizard defaults come from a generated include file, not /D switches: the
+# WebDAV password can travel this way, and a command line is readable by every
+# process on this machine.
+if (-not (Test-Path "build_config.toml")) {
     # Silence here used to look like the settings had simply been ignored.
-    Write-Warning "No build_config.toml (copy build_config.example.toml). No TMDb key is baked in and the installer wizard starts empty."
+    Write-Warning "No build_config.toml (copy build_config.example.toml). No TMDb key is baked in and the installer wizard asks for everything."
 }
+Invoke-Step "wizard defaults" { python build\gen_wizard_defaults.py }
 
-Invoke-Step "Inno Setup" { & $iscc @defs "build\disc2jelly.iss" }
+Invoke-Step "Inno Setup" { & $iscc "build\disc2jelly.iss" }
 
 Write-Host "`nDone. Installer is in dist\" -ForegroundColor Green
 Write-Host "Note: the installer is unsigned, so SmartScreen will warn once." -ForegroundColor Yellow

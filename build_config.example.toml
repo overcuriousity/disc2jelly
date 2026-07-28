@@ -15,12 +15,14 @@ destination_kind = "local"
 local_path = ""
 
 # WebDAV only. URL and user are NOT secret and are baked in as wizard
-# defaults. The password is typed during install and stored on that machine.
+# defaults.
 webdav_url = ""
 webdav_user = ""
 
-# Only used with build_windows.ps1 -BakePassword. Leave empty otherwise.
-# SECURITY: PyInstaller does not obfuscate. A baked password is recoverable
-# from the shipped .exe with `strings`. Use an app password scoped to the
-# destination share, and never publish such an installer.
+# Fill this in and the installer stops asking: with the URL, user and password
+# all known, the wizard skips its credentials page entirely.
+# SECURITY: the price of that is a password compiled into Setup.exe, where
+# `strings` recovers it in seconds. Use an app password scoped to the
+# destination share, and never publish such an installer. Left empty, the
+# wizard asks for the password on the target machine instead.
 webdav_password = ""

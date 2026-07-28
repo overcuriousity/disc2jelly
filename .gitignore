@@ -9,6 +9,7 @@ venv/
 # Windows build artefacts
 build_config.toml
 disc2jelly/app/_baked.py
+build/wizard_defaults.isi
 disc2jelly/vendor/
 build/pyi/
 dist/

@@ -3,11 +3,17 @@
 ; Wraps the PyInstaller onedir output into one setup.exe, and collects the
 ; destination settings during install so the user never opens Settings.
 ;
-; The WebDAV URL and username arrive pre-filled from the baked defaults (they
-; are not secret). The password is typed here and written to the per-user
-; install_defaults.json on this machine — it is deliberately not compiled into
-; the binary. config.py layers that file underneath the user's own config.json,
-; so re-running setup never overwrites settings changed in the app.
+; Every field is pre-filled from build_config.toml via the generated
+; wizard_defaults.isi, and each page is skipped once nothing on it is still
+; unanswered — set webdav_url, webdav_user and webdav_password there and the
+; installer asks the end user nothing at all. Leave webdav_password empty and
+; the wizard collects it on the target machine instead; that is the safer
+; default, because anything in wizard_defaults.isi is compiled into Setup.exe
+; and recoverable with `strings`.
+;
+; The answers are written to the per-user install_defaults.json. config.py
+; layers that file underneath the user's own config.json, so re-running setup
+; never overwrites settings changed in the app.
 ;
 ; Build:  iscc build\disc2jelly.iss
 
@@ -16,12 +22,20 @@
 #define AppPublisher "Disc2Jelly"
 #define AppExe "Disc2Jelly.exe"
 
-; Overridden by build_windows.ps1 via /D switches.
+; Wizard defaults, generated from build_config.toml by
+; build/gen_wizard_defaults.py (run by build_windows.ps1). Absent for a build
+; with no build_config.toml, in which case the wizard asks for everything.
+#if FileExists(AddBackslash(SourcePath) + "wizard_defaults.isi")
+  #include "wizard_defaults.isi"
+#endif
 #ifndef DefaultWebdavUrl
   #define DefaultWebdavUrl ""
 #endif
 #ifndef DefaultWebdavUser
   #define DefaultWebdavUser ""
+#endif
+#ifndef DefaultWebdavPassword
+  #define DefaultWebdavPassword ""
 #endif
 #ifndef DefaultLocalPath
   #define DefaultLocalPath ""
@@ -29,11 +43,6 @@
 ; "local" or "webdav" — preselects the destination page.
 #ifndef DefaultDestinationKind
   #define DefaultDestinationKind "local"
-#endif
-; "1" when build_windows.ps1 -BakePassword compiled the password in; the
-; wizard then has nothing left to ask and skips the WebDAV page.
-#ifndef HasBakedPassword
-  #define HasBakedPassword "0"
 #endif
 
 [Setup]
@@ -106,6 +115,7 @@ begin
   WebdavPage.Add('Password:', True);
   WebdavPage.Values[0] := '{#DefaultWebdavUrl}';
   WebdavPage.Values[1] := '{#DefaultWebdavUser}';
+  WebdavPage.Values[2] := '{#DefaultWebdavPassword}';
 end;
 
 function UseWebdav: Boolean;
@@ -115,15 +125,25 @@ end;
 
 function CredentialsAreComplete: Boolean;
 begin
-  Result := ('{#HasBakedPassword}' = '1') and ('{#DefaultWebdavUrl}' <> '')
-            and ('{#DefaultWebdavUser}' <> '');
+  Result := ('{#DefaultWebdavUrl}' <> '') and ('{#DefaultWebdavUser}' <> '')
+            and ('{#DefaultWebdavPassword}' <> '');
+end;
+
+{ build_config.toml already answers every destination question. }
+function FullyConfigured: Boolean;
+begin
+  if '{#DefaultDestinationKind}' = 'webdav' then
+    Result := CredentialsAreComplete
+  else
+    Result := '{#DefaultLocalPath}' <> '';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  if PageID = LocalPage.ID then Result := UseWebdav;
-  { Nothing left to ask when URL, user and password are all baked in. }
+  if PageID = DestPage.ID then Result := FullyConfigured;
+  if PageID = LocalPage.ID then Result := UseWebdav or FullyConfigured;
+  { Nothing left to ask when URL, user and password all came from the build. }
   if PageID = WebdavPage.ID then
     Result := (not UseWebdav) or CredentialsAreComplete;
 end;

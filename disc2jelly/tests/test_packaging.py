@@ -16,6 +16,7 @@ BUILD = REPO / "build"
 SPEC = (BUILD / "disc2jelly.spec").read_text(encoding="utf-8")
 ISS = (BUILD / "disc2jelly.iss").read_text(encoding="utf-8")
 PS1 = (BUILD / "build_windows.ps1").read_text(encoding="utf-8")
+GEN = (BUILD / "gen_wizard_defaults.py").read_text(encoding="utf-8")
 
 
 def _load_run_app():
@@ -69,7 +70,7 @@ def test_uvicorn_is_handed_the_app_object():
 
 def test_installer_honours_the_configured_destination_kind():
     assert "DefaultDestinationKind" in ISS
-    assert "/DDefaultDestinationKind=" in PS1
+    assert "DefaultDestinationKind" in GEN
 
 
 def test_missing_build_config_is_reported():
@@ -84,7 +85,21 @@ def test_installer_omits_empty_values_from_install_defaults():
     assert '\'  "webdav_url": "\'' not in ISS
 
 
-def test_wizard_skips_webdav_page_when_everything_is_baked():
-    assert "HasBakedPassword" in ISS
+def test_wizard_skips_pages_that_have_nothing_left_to_ask():
     assert "CredentialsAreComplete" in ISS
-    assert "/DHasBakedPassword=1" in PS1
+    assert "FullyConfigured" in ISS
+    for page in ("DestPage.ID", "LocalPage.ID", "WebdavPage.ID"):
+        assert page in ISS
+
+
+def test_wizard_defaults_come_from_a_file_not_the_command_line():
+    """A /D switch would put the WebDAV password in the process list."""
+    assert "wizard_defaults.isi" in ISS
+    assert "gen_wizard_defaults.py" in PS1
+    assert "/DDefault" not in PS1
+
+
+def test_generated_wizard_defaults_are_gitignored():
+    """It can hold a password; it must never be committed."""
+    ignored = (REPO / ".gitignore").read_text(encoding="utf-8")
+    assert "build/wizard_defaults.isi" in ignored

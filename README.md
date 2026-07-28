@@ -81,7 +81,9 @@ download does not match. To move to a new HandBrake release, bump `HANDBRAKE_VER
 
 ### A note on credentials
 
-`build_windows.ps1` bakes the TMDb key, WebDAV URL and username into the binary — none of those are secret. It does **not** bake the WebDAV password: PyInstaller performs no obfuscation, so any compiled-in string is recoverable with `strings`. The installer wizard collects the password on the target machine instead. `-BakePassword` exists for private builds; use an app password scoped to the destination share, and never publish such an installer.
+`build_windows.ps1` bakes the TMDb key, WebDAV URL and username in — none of those are secret. Every value in `build_config.toml` also pre-fills the installer wizard, and **each wizard page is skipped once nothing on it is unanswered**: fill in `destination_kind = "webdav"` plus `webdav_url`, `webdav_user` and `webdav_password` and the installer asks the end user nothing at all.
+
+That last one is the trade-off to understand. A `webdav_password` in `build_config.toml` is compiled into `Setup.exe` and recoverable from it with `strings` — nothing obfuscates it. Leave it empty (the default) and the wizard collects the password on the target machine instead, which is the only version safe to hand to anyone else. For a private build, use an app password scoped to the destination share and keep the installer to yourself. `-BakePassword` additionally compiles it into `Disc2Jelly.exe`; with the wizard path above it is rarely needed.
 
 ## First-time setup (2 minutes, once per PC)
 

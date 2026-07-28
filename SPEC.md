@@ -47,6 +47,7 @@ disc2jelly/
 └── start_windows.bat  # source-run fallback; end users get the installer
 build/
 ├── gen_baked.py       # writes app/_baked.py from build_config.toml
+├── gen_wizard_defaults.py  # writes wizard_defaults.isi (generated, gitignored)
 ├── fetch_deps.py      # downloads + checksum-pins HandBrakeCLI
 ├── disc2jelly.spec    # PyInstaller onedir
 ├── disc2jelly.iss     # Inno Setup wizard (collects destination config)
