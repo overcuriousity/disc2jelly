@@ -30,6 +30,11 @@
 #ifndef DefaultDestinationKind
   #define DefaultDestinationKind "local"
 #endif
+; "1" when build_windows.ps1 -BakePassword compiled the password in; the
+; wizard then has nothing left to ask and skips the WebDAV page.
+#ifndef HasBakedPassword
+  #define HasBakedPassword "0"
+#endif
 
 [Setup]
 AppName={#AppName}
@@ -108,11 +113,19 @@ begin
   Result := DestPage.Values[1];
 end;
 
+function CredentialsAreComplete: Boolean;
+begin
+  Result := ('{#HasBakedPassword}' = '1') and ('{#DefaultWebdavUrl}' <> '')
+            and ('{#DefaultWebdavUser}' <> '');
+end;
+
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
   if PageID = LocalPage.ID then Result := UseWebdav;
-  if PageID = WebdavPage.ID then Result := not UseWebdav;
+  { Nothing left to ask when URL, user and password are all baked in. }
+  if PageID = WebdavPage.ID then
+    Result := (not UseWebdav) or CredentialsAreComplete;
 end;
 
 { Escape for JSON, and force the result to pure ASCII.
@@ -148,30 +161,40 @@ end;
   config.py layers this file underneath the user's own config.json, so
   reinstalling or upgrading can never destroy settings the user changed
   in the app. }
+{ Empty fields are left out entirely rather than written as "": a blank
+  wizard box must not overwrite a value baked in at build time. }
+procedure AddPair(var Body: String; const Key, Value: String);
+begin
+  if Value = '' then
+    Exit;
+  if Body <> '' then
+    Body := Body + ',' + #13#10;
+  Body := Body + '  "' + Key + '": "' + JsonEscape(Value) + '"';
+end;
+
 procedure WriteConfig;
 var
-  ConfigDir, DefaultsFile, Json: String;
+  ConfigDir, DefaultsFile, Body: String;
 begin
   ConfigDir := ExpandConstant('{userappdata}\disc2jelly');
   ForceDirectories(ConfigDir);
   DefaultsFile := ConfigDir + '\install_defaults.json';
 
+  Body := '';
   if UseWebdav then
-    Json :=
-      '{' + #13#10 +
-      '  "destination_kind": "webdav",' + #13#10 +
-      '  "webdav_url": "' + JsonEscape(WebdavPage.Values[0]) + '",' + #13#10 +
-      '  "webdav_user": "' + JsonEscape(WebdavPage.Values[1]) + '",' + #13#10 +
-      '  "webdav_password": "' + JsonEscape(WebdavPage.Values[2]) + '"' + #13#10 +
-      '}' + #13#10
+  begin
+    AddPair(Body, 'destination_kind', 'webdav');
+    AddPair(Body, 'webdav_url', WebdavPage.Values[0]);
+    AddPair(Body, 'webdav_user', WebdavPage.Values[1]);
+    AddPair(Body, 'webdav_password', WebdavPage.Values[2]);
+  end
   else
-    Json :=
-      '{' + #13#10 +
-      '  "destination_kind": "local",' + #13#10 +
-      '  "local_path": "' + JsonEscape(LocalPage.Values[0]) + '"' + #13#10 +
-      '}' + #13#10;
+  begin
+    AddPair(Body, 'destination_kind', 'local');
+    AddPair(Body, 'local_path', LocalPage.Values[0]);
+  end;
 
-  SaveStringToFile(DefaultsFile, Json, False);
+  SaveStringToFile(DefaultsFile, '{' + #13#10 + Body + #13#10 + '}' + #13#10, False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

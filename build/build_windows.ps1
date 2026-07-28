@@ -105,6 +105,9 @@ print(json.dumps(tomllib.load(open('build_config.toml','rb'))))
     if ($cfg.webdav_user)      { $defs += "/DDefaultWebdavUser=$($cfg.webdav_user)" }
     if ($cfg.local_path)       { $defs += "/DDefaultLocalPath=$($cfg.local_path)" }
     if ($cfg.destination_kind) { $defs += "/DDefaultDestinationKind=$($cfg.destination_kind)" }
+    # With the password compiled in there is nothing left to ask, so the
+    # wizard skips its WebDAV page entirely.
+    if ($BakePassword -and $cfg.webdav_password) { $defs += "/DHasBakedPassword=1" }
     if ($defs.Count -gt 0) {
         Write-Host "Wizard defaults from build_config.toml:" -ForegroundColor Cyan
         $defs | ForEach-Object { Write-Host "  $_" }
