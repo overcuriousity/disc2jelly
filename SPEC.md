@@ -195,8 +195,8 @@ class WebDAVClient:
     def test_connection(self) -> tuple[bool, str]    # PROPFIND Depth:0 on base_url; returns (ok, message)
 ```
 - **URL-encode every path segment** (spaces, non-ASCII). Auth: HTTP Basic (recommend app passwords in README).
-- **Large files (≥ 256 MiB)**: use Nextcloud chunking v2 (info.md §5.3): MKCOL `<uploads-root>/<uuid>/` (uploads root derived from base_url by replacing `/dav/files/<user>` with `/dav/uploads/<user>`; every chunk request carries `Destination: <final url>` header) → PUT numeric zero-padded chunks (64 MiB each, names 000001..; header `OC-Total-Length: <size>`) → `MOVE <dir>/.file` with `Destination` final URL. On any chunking error, abort (DELETE upload dir) and raise — do NOT silently fall back to plain PUT for multi-GB files.
-- Small files: plain streamed PUT (file object as data, 8 MiB read chunks for progress). Cancel → abort request, cleanup remote temp if chunked.
+- **Large files (≥ 256 MiB) on Nextcloud/ownCloud** (detected by `base_url` containing `/dav/files/<user>`, the shape the uploads root is derived from): use Nextcloud chunking v2 (info.md §5.3): MKCOL `<uploads-root>/<uuid>/` (uploads root derived from base_url by replacing `/dav/files/<user>` with `/dav/uploads/<user>`; every chunk request carries `Destination: <final url>` header) → PUT numeric zero-padded chunks (64 MiB each, names 000001..; header `OC-Total-Length: <size>`) → `MOVE <dir>/.file` with `Destination` final URL. On any chunking error, abort (DELETE upload dir) and raise — do NOT silently fall back to plain PUT for multi-GB files.
+- Small files — and **files of any size on plain WebDAV servers** (rclone, nginx `dav_methods`, Apache `mod_dav`), which cannot speak chunking v2: plain streamed PUT (file object as data, 8 MiB read chunks for progress). Cancel → abort request, cleanup remote temp if chunked.
 - Errors raise `WebDAVError` with HTTP status + server text. Handle: 401/403 auth, 404 parent missing, 507 quota.
 
 ### Jobs/queue (`jobs.py`) — SACRED CONTRACT

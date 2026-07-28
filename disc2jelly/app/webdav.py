@@ -9,10 +9,14 @@ SPEC contract:
     class WebDAVError(Exception)
 
 Small files (< 256 MiB): single streamed PUT with progress from bytes sent.
-Large files (>= 256 MiB): Nextcloud chunking v2 (info.md §5.3) — MKCOL transfer
+Large files (>= 256 MiB) on Nextcloud (base_url inside /dav/files/<user>, see
+`supports_chunking`): Nextcloud chunking v2 (info.md §5.3) — MKCOL transfer
 dir under /dav/uploads/<user>/, zero-padded numeric 64 MiB chunks carrying
 OC-Total-Length + Destination headers, MOVE of `.file` to assemble, DELETE of
-the transfer dir to abort. No silent fallback to plain PUT for large files.
+the transfer dir to abort. Once a chunked upload has started it never falls
+back to plain PUT — a chunking error aborts the job.
+
+Plain WebDAV servers: single streamed PUT regardless of size.
 
 No imports from other disc2jelly app modules (owned by other coders).
 """
@@ -113,6 +117,16 @@ class WebDAVClient:
         """Absolute URL of a path inside the user's files tree."""
         enc = _encode_rel_path(rel)
         return f"{self.base_url}/{enc}" if enc else self.base_url
+
+    def supports_chunking(self) -> bool:
+        """Whether this server speaks Nextcloud chunking v2.
+
+        The protocol is Nextcloud/ownCloud-specific, so it is only offered
+        when base_url points into a `/dav/files/<user>` tree — the shape
+        `uploads_root()` needs. Plain WebDAV servers (rclone, nginx dav,
+        Apache mod_dav) get a single streamed PUT at any size instead.
+        """
+        return bool(self.user) and f"/dav/files/{self.user}" in self.base_url
 
     def uploads_root(self) -> str:
         """Derive the Nextcloud chunking endpoint from base_url.
@@ -258,7 +272,7 @@ class WebDAVClient:
             self._emit(emit, job_id, "cancelled", 0.0, "Upload cancelled")
             raise WebDAVError("Upload cancelled before it started")
 
-        chunked = size >= SMALL_FILE_LIMIT
+        chunked = size >= SMALL_FILE_LIMIT and self.supports_chunking()
         if chunked:
             # Validate the uploads-root derivation before any request goes out:
             # a bad base_url is a config error, not a runtime surprise.

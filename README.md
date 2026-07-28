@@ -81,6 +81,7 @@ On Windows the installer already did this. Otherwise:
 1. Click the **gear icon** (Settings).
 2. **Destination**: either a folder (including a mapped drive or `\\nas\media`) or a WebDAV URL with user + app password.
    - Point your Jellyfin libraries at the same place. Disc2Jelly creates `Movies/…` and `Shows/…` underneath.
+   - Nextcloud/ownCloud works out of the box. For a plain WebDAV server on your Jellyfin box (rclone behind nginx, ~10 minutes), see [docs/webdav-server.md](docs/webdav-server.md).
 3. **TMDb API key**: paste a v3 key or v4 token — enables automatic film and series detection from the disc label.
 4. Save. All four status dots should be green.
 

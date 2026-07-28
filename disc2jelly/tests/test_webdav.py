@@ -103,6 +103,13 @@ def test_uploads_root_derivation():
     assert client.uploads_root() == UPLOADS
 
 
+def test_supports_chunking_only_for_files_tree():
+    assert WebDAVClient(BASE, USER, "x").supports_chunking() is True
+    assert WebDAVClient("https://s.example/dav", USER, "x").supports_chunking() is False
+    # right tree, wrong user -> no chunking (uploads root would be someone else's)
+    assert WebDAVClient(BASE, "other", "x").supports_chunking() is False
+
+
 def test_uploads_root_underivable_raises():
     client = WebDAVClient("https://nas.example/webdav/movies", USER, "x")
     with pytest.raises(WebDAVError, match="dav/files"):
@@ -404,13 +411,22 @@ def test_chunked_upload_move_failure_aborts(monkeypatch, tmp_path, tiny_limits):
     assert methods(server)[-1] == "DELETE"
 
 
-def test_chunked_upload_requires_files_tree_url(monkeypatch, tmp_path, tiny_limits):
-    client = WebDAVClient("https://nas.example/webdav/movies", USER, "x")
-    monkeypatch.setattr(client.session, "request",
-                        lambda m, u, **k: pytest.fail("no request expected"))
-    local = write_file(tmp_path, 2 * 1024 * 1024)
-    with pytest.raises(WebDAVError, match="files tree"):
-        client.upload(local, "Movies/x/y.mkv", None, threading.Event(), "j")
+def test_plain_server_uses_single_put_for_big_file(monkeypatch, tmp_path, tiny_limits):
+    """No /dav/files/<user> tree: chunking is unavailable, so PUT the lot."""
+    plain = "https://streaming.example/dav"
+    client, server = make_client(monkeypatch, ok_handler, base_url=plain)
+    assert client.supports_chunking() is False
+    size = 2 * 1024 * 1024
+    local = write_file(tmp_path, size)
+
+    client.upload(local, "Movies/x/y.mkv", None, threading.Event(), "j")
+
+    puts = [c for c in server.calls if c["method"] == "PUT"]
+    assert len(puts) == 1
+    assert puts[0]["url"] == plain + "/Movies/x/y.mkv"
+    assert len(puts[0]["body"]) == size
+    assert "MOVE" not in methods(server)
+    assert not any("/dav/uploads/" in c["url"] for c in server.calls)
 
 
 def test_no_silent_fallback_to_plain_put_for_big_file(monkeypatch, tmp_path, tiny_limits):
