@@ -408,7 +408,13 @@ async def config_put(request: Request):
 
     errors = _validate_config(values)
     if errors:
-        return JSONResponse({"ok": False, "errors": errors}, status_code=400)
+        # "error" carries the same text as "errors" so any client that reads
+        # only the single-message shape still shows the reason instead of a
+        # bare 400. Both keys stay; "errors" is the documented one.
+        return JSONResponse(
+            {"ok": False, "errors": errors, "error": "; ".join(errors)},
+            status_code=400,
+        )
     try:
         cfg = dataclasses.replace(current, **{
             k: v for k, v in values.items() if k in
@@ -421,6 +427,12 @@ async def config_put(request: Request):
 
 def _validate_config(values: dict) -> list[str]:
     errors: list[str] = []
+    # A <select> silently blanks itself when assigned a value none of its
+    # options carry, and both destination.py and /api/health read an empty
+    # kind as "local" — so an unnoticed blank would quietly redirect finished
+    # films from the WebDAV share to a local folder. Reject it loudly instead.
+    if values.get("destination_kind") not in ("local", "webdav"):
+        errors.append("destination_kind must be 'local' or 'webdav'")
     if values.get("encoder") not in ("hevc", "h264"):
         errors.append("encoder must be 'hevc' or 'h264'")
     for key in ("hevc_quality", "h264_quality"):

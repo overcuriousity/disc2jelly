@@ -111,6 +111,36 @@ def test_config_put_rejects_non_numeric_quality(monkeypatch):
     assert resp.json()["ok"] is False
 
 
+def test_config_put_rejects_a_blank_destination_kind(monkeypatch):
+    """An empty kind reads as "local" downstream — never accept it silently."""
+    saved = {}
+    monkeypatch.setattr(main, "_load_config",
+                        lambda: config.Config(destination_kind="webdav"))
+    monkeypatch.setattr(config, "save",
+                        lambda cfg, path=None: saved.update(cfg=cfg))
+    client = TestClient(main.app)
+
+    resp = client.put("/api/config", json={"destination_kind": ""})
+    assert resp.status_code == 400
+    assert "destination_kind" in resp.json()["error"]
+    assert not saved, "a rejected save must not reach disk"
+
+
+def test_config_put_400_states_the_reason(monkeypatch):
+    """A rejected save must say what was wrong, not just fail.
+
+    The UI showed a bare "Request failed (400)" because the validation
+    response carried only "errors" while the client read "error".
+    """
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config())
+    client = TestClient(main.app)
+    resp = client.put("/api/config", json={"encoder": "", "hevc_quality": 99})
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "encoder" in body["error"] and "hevc_quality" in body["error"]
+    assert body["errors"] == body["error"].split("; ")
+
+
 # ------------------------------------------------------- duplicate 409 (#15)
 
 
