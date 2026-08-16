@@ -460,7 +460,9 @@ def test_dvdcss_state_passes_the_bundled_dir_into_the_hint(monkeypatch):
     monkeypatch.setattr(dvdcss, "hint", lambda bundled=None: f"folder={bundled}")
     ok, hint = main._dvdcss_state()
     assert ok is False
-    assert hint == "folder=/opt/disc2jelly"
+    # str(Path(...)) is "\opt\disc2jelly" on Windows: compare against the
+    # platform's own rendering, not a POSIX literal.
+    assert hint == f"folder={Path('/opt/disc2jelly')}"
 
 
 def test_dvdcss_state_survives_a_broken_backend(monkeypatch):

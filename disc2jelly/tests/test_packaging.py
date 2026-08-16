@@ -40,8 +40,12 @@ def test_missing_std_streams_are_replaced(monkeypatch):
     run_app._ensure_std_streams()
 
     try:
-        assert sys.stdout.isatty() is False
-        assert sys.stderr.isatty() is False
+        # The point is that isatty() answers at all — uvicorn's log formatter
+        # calls it and died on None. What it answers is the platform's
+        # business: NUL on Windows is a character device and reports True,
+        # /dev/null reports False.
+        assert isinstance(sys.stdout.isatty(), bool)
+        assert isinstance(sys.stderr.isatty(), bool)
         print("writable")  # what a bare print in the frozen app would do
     finally:
         for stream in (sys.stdout, sys.stderr):
