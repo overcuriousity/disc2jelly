@@ -140,9 +140,18 @@ Titles the scanner detects as duplicates (DVDs routinely expose the main feature
 
 ## Encoding defaults
 
-- Container: MKV. Video: x265 RF 22 (HEVC) or x264 RF 20. Audio: all tracks passthrough. Subtitles: all, none burned in. Chapter markers kept.
-- RF 22 HEVC typically lands a DVD main feature at ~1–2 GB with visually transparent quality.
-- Change quality in Settings (`hevc_quality` / `h264_quality`, lower = better/bigger).
+- Container: MKV. Video: x265 RF 18 (HEVC) or x264 RF 16. Audio: all tracks passthrough. Subtitles: all, none burned in. Chapter markers kept.
+- The defaults are tuned for DVD, the only source this app handles. RF is
+  relative to resolution: at 576 lines every pixel covers far more screen than
+  at 1080p, so artefacts that stay invisible at RF 22 on HD show up here. RF 18
+  sits close to what the MPEG-2 on the disc itself can deliver, which makes the
+  disc the limit rather than the encode. Expect roughly 2–4 GB for a main
+  feature.
+- For markedly smaller files at some visible cost, RF 20–22 still looks decent
+  on a normal-sized screen. Change it in Settings → Advanced (`hevc_quality` /
+  `h264_quality`, lower = better and bigger).
+- No upscaling, ever. A PAL DVD is 720×576 (displayed 1024×576) and stays that
+  way; scaling to 1080p adds pixels, not detail.
 
 ## Troubleshooting
 

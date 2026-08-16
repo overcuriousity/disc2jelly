@@ -61,8 +61,13 @@ class Config:
     naming_style: str = "jellyfin"  # "jellyfin" | "plain", see metadata.py
     temp_dir: str = ""            # default: <config dir>/work
     encoder: str = "hevc"         # "hevc" | "h264"
-    hevc_quality: int = 22        # RF/CRF
-    h264_quality: int = 20
+    # RF/CRF, lower = better. Tuned for DVD, the only source this app has:
+    # at 576 lines each pixel covers far more screen than at 1080p, so the
+    # artefacts that hide at RF 22 on HD are visible here. These values sit
+    # close to the MPEG-2 source's own ceiling; the disc, not the encoder,
+    # is then the limit.
+    hevc_quality: int = 18
+    h264_quality: int = 16
     handbrake_path: str = ""      # empty = auto-detect
     min_title_seconds: int = 600  # filter junk titles
 

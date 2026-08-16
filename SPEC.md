@@ -106,7 +106,7 @@ class Config:
     tmdb_api_key: str = ""        # v3 api_key; empty = _baked.TMDB_API_KEY
     temp_dir: str = ""            # default: <config dir>/work
     encoder: str = "hevc"         # "hevc" | "h264"
-    hevc_quality: int = 22        # RF/CRF
+    hevc_quality: int = 18        # RF/CRF, tuned for DVD (SD) sources
     h264_quality: int = 20
     handbrake_path: str = ""      # empty = auto-detect
     min_title_seconds: int = 600  # filter junk titles

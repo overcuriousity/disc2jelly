@@ -15,8 +15,8 @@ from app import config
 def test_defaults() -> None:
     cfg = config.Config()
     assert cfg.encoder == "hevc"
-    assert cfg.hevc_quality == 22
-    assert cfg.h264_quality == 20
+    assert cfg.hevc_quality == 18
+    assert cfg.h264_quality == 16
     assert cfg.handbrake_path == ""
     assert cfg.temp_dir == ""
 
@@ -104,7 +104,7 @@ def test_load_ignores_unknown_keys_and_bad_types(tmp_path: Path) -> None:
     cfg = config.load(path=p)
     assert cfg.webdav_url == "https://x"
     assert cfg.encoder == "h264"
-    assert cfg.hevc_quality == 22  # default kept
+    assert cfg.hevc_quality == 18  # default kept
     assert cfg.min_title_seconds == 600  # default kept
 
 
@@ -153,7 +153,7 @@ def test_install_defaults_are_type_checked_too(tmp_path: Path) -> None:
            {"local_path": 42, "hevc_quality": "nope", "webdav_url": "https://x"})
     cfg = config.load(path=tmp_path / "config.json")
     assert cfg.local_path == ""       # wrong type -> dropped
-    assert cfg.hevc_quality == 22     # wrong type -> dropped
+    assert cfg.hevc_quality == 18     # wrong type -> dropped
     assert cfg.webdav_url == "https://x"
 
 
