@@ -17,6 +17,7 @@ Failures return [] rather than raising, matching the old disc.py contract.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 
@@ -83,11 +84,16 @@ def scan_titles(handbrake_path: str, device: str, min_seconds: int) -> list[Titl
         proc = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            # NOT stderr=STDOUT. libhb logs to stderr while the JSON goes to
+            # stdout; merging them interleaves log lines *inside* the JSON
+            # object ("HandBrake has exited." landing mid-array), raw_decode
+            # then fails and every disc scans as "no titles".
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=SCAN_TIMEOUT_S,
+            env={**os.environ, "LC_ALL": "C"},
         )
     except (OSError, subprocess.TimeoutExpired):
         return []

@@ -24,11 +24,32 @@ def _mock_run(monkeypatch: pytest.MonkeyPatch, stdout: str) -> list[list[str]]:
 
     def fake_run(args, **kwargs):  # noqa: ANN001, ANN202
         calls.append(list(args))
+        kwargs_seen.append(kwargs)
         assert kwargs.get("timeout") is not None, "every call must have a timeout"
         return _Completed(stdout)
 
     monkeypatch.setattr(scan.subprocess, "run", fake_run)
     return calls
+
+
+kwargs_seen: list[dict] = []
+
+
+def test_scan_never_merges_stderr_into_the_json_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stderr=STDOUT corrupts the payload and empties every disc.
+
+    libhb logs to stderr while --json writes the title set to stdout. Merged
+    into one pipe they interleave, and a log line landing inside the JSON
+    object makes raw_decode fail — the app then reports a disc full of titles
+    as having none. Real symptom, invisible to a hand-written fixture.
+    """
+    kwargs_seen.clear()
+    _mock_run(monkeypatch, SCAN_OUTPUT)
+    scan.scan_titles("HandBrakeCLI", "/dev/sr0", min_seconds=0)
+    assert kwargs_seen[0].get("stderr") is not subprocess.STDOUT
+    assert kwargs_seen[0].get("stdout") is subprocess.PIPE
 
 
 # --- command construction ---------------------------------------------------
