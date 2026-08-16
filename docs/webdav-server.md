@@ -114,14 +114,21 @@ Settings (gear icon) → Destination → **WebDAV**:
 - URL: `https://media.example/dav`
 - User / password: the htpasswd pair
 
-Disc2Jelly creates `Movies/` and `Shows/` under that URL (see `MOVIES_ROOT` /
-`SHOWS_ROOT` in `app/metadata.py`).
+By default Disc2Jelly creates `Movies/` and `Shows/` under that URL. Both are
+configurable in Settings → Advanced (*Films folder* / *Series folder*), and the
+URL should point at the directory those roots belong in — if your library lives
+under `streaming-server/`, the URL is `https://media.example/dav/streaming-server`,
+not `https://media.example/dav`.
 
 ## Jellyfin libraries
 
-Uploads land in `/mnt/media/Movies/…` and `/mnt/media/Shows/…`. If your library
-folders are named differently (`movies`, `series`, …), note that Linux paths are
-case-sensitive — the new folders are separate directories. Either add
-`/mnt/media/Movies` and `/mnt/media/Shows` as additional folders to the existing
-Jellyfin libraries (simplest, no code change), or change `MOVIES_ROOT` /
-`SHOWS_ROOT` to match your layout.
+With the defaults, uploads land in `/mnt/media/Movies/…` and `/mnt/media/Shows/…`.
+If your library folders are named differently (`movies`, `series`, …), note that
+Linux paths are case-sensitive — `Movies` and `movies` are separate directories.
+Set *Films folder* and *Series folder* to match what you already have, rather
+than adding a second pair of folders to the Jellyfin library.
+
+If your existing files are named `<Series> (<Year>) - S01E05.mkv` without a
+`[tmdbid-…]` tag, also set *File naming* to **Plain style**. Otherwise new rips
+get their own `<Series> (<Year>) [tmdbid-…]/` folder next to the one you have,
+splitting the show across two directories on disk.

@@ -1,0 +1,119 @@
+name: windows-build
+
+# The frozen build is where this project keeps breaking: a windowed app with no
+# std streams, an entry script whose relative imports die, an installer that
+# clobbered baked values. None of it is visible to pytest, and it cannot be
+# built anywhere but Windows. So build it here and actually start it.
+#
+# What this cannot cover: a real DVD drive, libdvdcss, SmartScreen, and the
+# wizard's interactive pages (silent install takes the defaults).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the installer
+        run: powershell -ExecutionPolicy Bypass -File build\build_windows.ps1
+
+      - name: The build produced what it claims
+        shell: pwsh
+        run: |
+          $app = "dist\Disc2Jelly\Disc2Jelly.exe"
+          if (-not (Test-Path $app)) { throw "PyInstaller produced no $app" }
+          # HandBrakeCLI must be in the bundle somewhere config.bundled_dirs()
+          # looks — beside the exe, or in PyInstaller 6's _internal payload
+          # directory. Shipping without it means no disc can be read.
+          $hb = @("dist\Disc2Jelly\HandBrakeCLI.exe",
+                  "dist\Disc2Jelly\_internal\HandBrakeCLI.exe") |
+                Where-Object { Test-Path $_ }
+          if (-not $hb) { throw "HandBrakeCLI.exe is missing from the bundle" }
+          Write-Host "HandBrakeCLI: $hb"
+          $setup = Get-ChildItem "dist\Disc2Jelly-Setup-*.exe" -ErrorAction SilentlyContinue
+          if (-not $setup) { throw "Inno Setup produced no installer" }
+          Write-Host "installer: $($setup.Name) ($([math]::Round($setup.Length/1MB,1)) MB)"
+
+      - name: The frozen app starts and serves
+        shell: pwsh
+        run: |
+          # Regression guard for the console=False crash: the app died on
+          # sys.stdout being None before serving a single request, so "the
+          # build succeeded" never meant "the app runs".
+          $proc = Start-Process -FilePath "dist\Disc2Jelly\Disc2Jelly.exe" -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..45) {
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 `
+                       "http://127.0.0.1:8642/api/health"
+                if ($r.StatusCode -eq 200) {
+                  $health = $r.Content | ConvertFrom-Json
+                  Write-Host "health: $($r.Content)"
+                  # The bundled binary has to be the one it finds.
+                  if (-not $health.binaries.handbrake) {
+                    throw "the frozen app cannot see its own bundled HandBrakeCLI"
+                  }
+                  $ok = $true
+                  break
+                }
+              } catch [System.Net.WebException] { Start-Sleep -Seconds 2 }
+                catch { if ($_.Exception.Message -like "*bundled*") { throw } ; Start-Sleep -Seconds 2 }
+            }
+            if (-not $ok) { throw "the frozen app never answered on 127.0.0.1:8642" }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: The installer installs, and what it installs runs
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem "dist\Disc2Jelly-Setup-*.exe")[0].FullName
+          $dir = Join-Path $env:RUNNER_TEMP "d2j"
+          # PrivilegesRequired=lowest, so no elevation is needed here.
+          Start-Process -Wait -FilePath $setup -ArgumentList `
+            "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir"
+          $app = Join-Path $dir "Disc2Jelly.exe"
+          if (-not (Test-Path $app)) { throw "silent install left no $app" }
+
+          $proc = Start-Process -FilePath $app -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..45) {
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 `
+                       "http://127.0.0.1:8642/api/health"
+                if ($r.StatusCode -eq 200) { Write-Host "installed health: $($r.Content)"; $ok = $true; break }
+              } catch { Start-Sleep -Seconds 2 }
+            }
+            if (-not $ok) { throw "the installed app never answered" }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Disc2Jelly-Setup
+          path: dist/Disc2Jelly-Setup-*.exe
+          if-no-files-found: warn

@@ -35,7 +35,7 @@ Build it from source, or copy the file from a player installation that already h
 | Component | Package |
 |---|---|
 | Python ≥ 3.11 | `python3`, `python3-venv` |
-| HandBrakeCLI | `handbrake-cli` (Debian/Ubuntu), `HandBrake-cli` (Fedora/RPM Fusion) |
+| HandBrakeCLI | `handbrake-cli` (Debian/Ubuntu), `HandBrake` (Fedora/RPM Fusion — the CLI ships in the main package; the old `HandBrake-cli` split no longer exists) |
 | libdvdcss | `libdvdcss2` via `libdvd-pkg` (Debian/Ubuntu), `libdvdcss` (Fedora/RPM Fusion) |
 
 A TMDb API key is optional — without one, type film and series names by hand.
@@ -119,18 +119,44 @@ Switch the disc panel to **TV episodes**. Disc2Jelly reads `SEASON`/`S01`/`DISC`
 
 Files land as `Shows/<Series> (<Year>) [tmdbid-<id>]/Season 01/<Series> S01E01 - <Episode>.mkv`.
 
+### Matching an existing library
+
+Settings → Advanced has three fields for fitting into a library that is already
+organised its own way:
+
+| Setting | Default | What it does |
+|---|---|---|
+| Films folder | `Movies` | Top-level folder for films; may be nested (`media/movies`) |
+| Series folder | `Shows` | Same for TV |
+| File naming | Jellyfin style | `Jellyfin`: `<Series> S01E05 - <Episode>.mkv` in `<Series> (<Year>) [tmdbid-<id>]/`<br>`Plain`: `<Series> (<Year>) - S01E05.mkv` in `<Series> (<Year>)/` |
+
+Plain style drops the `[tmdbid-<id>]` tag deliberately. Jellyfin matches either
+way, but if your library already holds `Dr. House (2004)`, appending a tmdbid
+would create a *second* folder for the same show and split it across two
+directories. Plain style also omits the episode title, matching how most
+existing libraries name their files.
+
 Titles the scanner detects as duplicates (DVDs routinely expose the main feature more than once) are flagged and start unticked, rather than being dropped — on a season disc, losing a real episode is worse than showing an extra row.
 
 ## Encoding defaults
 
-- Container: MKV. Video: x265 RF 22 (HEVC) or x264 RF 20. Audio: all tracks passthrough. Subtitles: all, none burned in. Chapter markers kept.
-- RF 22 HEVC typically lands a DVD main feature at ~1–2 GB with visually transparent quality.
-- Change quality in Settings (`hevc_quality` / `h264_quality`, lower = better/bigger).
+- Container: MKV. Video: x265 RF 18 (HEVC) or x264 RF 16. Audio: all tracks passthrough. Subtitles: all, none burned in. Chapter markers kept.
+- The defaults are tuned for DVD, the only source this app handles. RF is
+  relative to resolution: at 576 lines every pixel covers far more screen than
+  at 1080p, so artefacts that stay invisible at RF 22 on HD show up here. RF 18
+  sits close to what the MPEG-2 on the disc itself can deliver, which makes the
+  disc the limit rather than the encode. Expect roughly 2–4 GB for a main
+  feature.
+- For markedly smaller files at some visible cost, RF 20–22 still looks decent
+  on a normal-sized screen. Change it in Settings → Advanced (`hevc_quality` /
+  `h264_quality`, lower = better and bigger).
+- No upscaling, ever. A PAL DVD is 720×576 (displayed 1024×576) and stays that
+  way; scaling to 1080p adds pixels, not detail.
 
 ## Troubleshooting
 
 - **Red "Disc reader" dot**: libdvdcss is missing, and the banner names the folder it belongs in. Windows: put `libdvdcss-2.dll` there and restart. Linux: install your distro's `libdvdcss` package.
-- **Red "Movie shrinker" dot**: HandBrakeCLI not found. Linux: install `handbrake-cli`, or set the path in Settings (`handbrake_path`).
+- **Red "Movie shrinker" dot**: HandBrakeCLI not found. Linux: install it (see [Requirements](#requirements)), or set the path in Settings (`handbrake_path`).
 - **No disc found**: Linux — check the user can access the optical drive (`cdrom` group / udev rules).
 - **Upload fails with quota/auth errors**: check Settings → Test server connection; use an app password, not your main password.
 - **Progress bar stalls on "Analyzing source"**: HandBrake is scanning the disc, normal for 1–3 min.
@@ -141,8 +167,18 @@ Titles the scanner detects as duplicates (DVDs routinely expose the main feature
 
 ```
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # requirements.txt + pytest/httpx
+cd disc2jelly
 python -m pytest tests -q
+node --test tests/js_badge_logic.test.mjs tests/js_settings_numbers.test.mjs
 python -m app.main
 ```
+
+CI (`.github/workflows/`) runs pytest on Linux **and** Windows — config paths,
+binary discovery and the packaging guards all branch on `sys.platform` — plus a
+`windows-build` job that builds the installer, starts the frozen app and checks
+`/api/health`, then silently installs it and starts that. The frozen build is
+where this project keeps breaking (no std streams, entry-script imports,
+payload directory layout) and none of it is reachable from unit tests.
+
 SPEC.md = architecture contract. info.md = verified CLI/API format notes.

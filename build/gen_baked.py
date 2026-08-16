@@ -33,6 +33,10 @@ FIELDS = [
     ("LOCAL_PATH", "local_path", ""),
     ("WEBDAV_URL", "webdav_url", ""),
     ("WEBDAV_USER", "webdav_user", ""),
+    # Library layout, so an installer can be pre-seeded for a NAS that already
+    # uses movies/ and series/ rather than the Jellyfin-doc defaults.
+    ("MOVIES_ROOT", "movies_root", "Movies"),
+    ("SHOWS_ROOT", "shows_root", "Shows"),
 ]
 
 HEADER = '''"""Build-time defaults baked in by build/gen_baked.py. DO NOT EDIT.

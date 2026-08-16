@@ -22,8 +22,14 @@ async function api(path, options) {
   let data = null;
   try { data = await res.json(); } catch (e) { /* non-JSON */ }
   if (!res.ok) {
-    const msg = (data && data.error) || ("Request failed (" + res.status + ")");
-    throw new Error(msg);
+    // Two error shapes exist: {error: "..."} from _err(), and
+    // {ok: false, errors: [...]} from config validation. Reading only the
+    // first turned every rejected setting into "Request failed (400)".
+    let msg = data && data.error;
+    if (!msg && data && Array.isArray(data.errors) && data.errors.length) {
+      msg = data.errors.join("; ");
+    }
+    throw new Error(msg || ("Request failed (" + res.status + ")"));
   }
   return data;
 }
@@ -636,10 +642,18 @@ const CFG_FIELDS = [
   ["webdav_user", "cfg-webdav-user"],
   ["webdav_password", "cfg-webdav-password"],
   ["tmdb_api_key", "cfg-tmdb-key"],
+  ["movies_root", "cfg-movies-root"],
+  ["shows_root", "cfg-shows-root"],
+  ["naming_style", "cfg-naming-style"],
   ["temp_dir", "cfg-temp-dir"],
   ["encoder", "cfg-encoder"],
   ["handbrake_path", "cfg-handbrake-path"],
 ];
+
+function setNumber(id, value) {
+  const n = typeof value === "string" ? parseInt(value, 10) : value;
+  if (Number.isFinite(n)) $(id).value = n;
+}
 
 async function openSettings() {
   $("settings-errors").textContent = "";
@@ -648,21 +662,36 @@ async function openSettings() {
     const cfg = await api("/api/config");
     CFG_FIELDS.forEach(([key, id]) => { $(id).value = cfg[key] || ""; });
     syncDestinationFields();
-    $("cfg-hevc-quality").value = cfg.hevc_quality;
-    $("cfg-h264-quality").value = cfg.h264_quality;
-    $("cfg-min-title").value = cfg.min_title_seconds;
+    // Assigning undefined to input[type=number] silently blanks it, which the
+    // user then saves back as null. Only write real numbers.
+    setNumber("cfg-hevc-quality", cfg.hevc_quality);
+    setNumber("cfg-h264-quality", cfg.h264_quality);
+    setNumber("cfg-min-title", cfg.min_title_seconds);
   } catch (e) {
     $("settings-errors").textContent = "Could not load settings: " + e.message;
   }
   $("settings-modal").hidden = false;
 }
 
+/* An empty number field means "leave this setting alone", not NaN.
+ *
+ * JSON.stringify turns NaN into null, and the server rightly rejects null as
+ * "must be a number" — so a blank Advanced field used to make every save fail
+ * with an error naming a field the user never touched. Omitting the key keeps
+ * the stored value instead. */
+function putNumber(body, key, id) {
+  const raw = $(id).value.trim();
+  if (raw === "") return;
+  const n = parseInt(raw, 10);
+  if (Number.isFinite(n)) body[key] = n;
+}
+
 async function saveSettings() {
   const body = {};
   CFG_FIELDS.forEach(([key, id]) => { body[key] = $(id).value.trim(); });
-  body.hevc_quality = parseInt($("cfg-hevc-quality").value, 10);
-  body.h264_quality = parseInt($("cfg-h264-quality").value, 10);
-  body.min_title_seconds = parseInt($("cfg-min-title").value, 10);
+  putNumber(body, "hevc_quality", "cfg-hevc-quality");
+  putNumber(body, "h264_quality", "cfg-h264-quality");
+  putNumber(body, "min_title_seconds", "cfg-min-title");
   try {
     await api("/api/config", {
       method: "PUT",

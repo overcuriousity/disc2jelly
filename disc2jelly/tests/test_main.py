@@ -111,6 +111,86 @@ def test_config_put_rejects_non_numeric_quality(monkeypatch):
     assert resp.json()["ok"] is False
 
 
+def test_config_put_rejects_a_blank_destination_kind(monkeypatch):
+    """An empty kind reads as "local" downstream — never accept it silently."""
+    saved = {}
+    monkeypatch.setattr(main, "_load_config",
+                        lambda: config.Config(destination_kind="webdav"))
+    monkeypatch.setattr(config, "save",
+                        lambda cfg, path=None: saved.update(cfg=cfg))
+    client = TestClient(main.app)
+
+    resp = client.put("/api/config", json={"destination_kind": ""})
+    assert resp.status_code == 400
+    assert "destination_kind" in resp.json()["error"]
+    assert not saved, "a rejected save must not reach disk"
+
+
+def test_config_put_rejects_an_unusable_library_root(monkeypatch):
+    """A root that sanitises to nothing would silently fall back to the default."""
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config())
+    client = TestClient(main.app)
+
+    resp = client.put("/api/config", json={"movies_root": "  "})
+    assert resp.status_code == 400
+    assert "movies_root" in resp.json()["error"]
+
+    resp = client.put("/api/config", json={"naming_style": "fancy"})
+    assert resp.status_code == 400
+    assert "naming_style" in resp.json()["error"]
+
+
+def test_config_put_accepts_a_nested_root(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config())
+    monkeypatch.setattr(config, "save",
+                        lambda cfg, path=None: saved.update(cfg=cfg))
+    client = TestClient(main.app)
+
+    resp = client.put("/api/config", json={
+        "movies_root": "movies", "shows_root": "series", "naming_style": "plain",
+    })
+    assert resp.status_code == 200, resp.text
+    assert saved["cfg"].shows_root == "series"
+    assert saved["cfg"].naming_style == "plain"
+
+
+def test_build_targets_uses_the_configured_layout(monkeypatch):
+    """The settings must reach the path builder, not just the config file."""
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config(
+        movies_root="movies", shows_root="series", naming_style="plain"))
+
+    body = main.JobCreate(
+        drive="/dev/sr0", kind="series", title="Dr. House", year=2004,
+        tmdb_id=1408, profile="hevc", titles=[],
+        episodes=[main.EpisodeAssignment(
+            title_index=1, season=1, episode=5, name="Damned If You Do")],
+    )
+    targets = main._build_targets(body)
+    assert targets[0].relpath == (
+        "series/Dr. House (2004)/Season 01/Dr. House (2004) - S01E05.mkv")
+
+    movie = main.JobCreate(drive="/dev/sr0", kind="movie", title="The Matrix",
+                           year=1999, tmdb_id=603, profile="hevc", titles=[15])
+    assert main._build_targets(movie)[0].relpath == (
+        "movies/The Matrix (1999)/The Matrix (1999).mkv")
+
+
+def test_config_put_400_states_the_reason(monkeypatch):
+    """A rejected save must say what was wrong, not just fail.
+
+    The UI showed a bare "Request failed (400)" because the validation
+    response carried only "errors" while the client read "error".
+    """
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config())
+    client = TestClient(main.app)
+    resp = client.put("/api/config", json={"encoder": "", "hevc_quality": 99})
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "encoder" in body["error"] and "hevc_quality" in body["error"]
+    assert body["errors"] == body["error"].split("; ")
+
+
 # ------------------------------------------------------- duplicate 409 (#15)
 
 
@@ -368,7 +448,7 @@ def test_dvdcss_state_detects_the_system_library(monkeypatch):
     """Regression: _dvdcss_state must not swallow a NameError and report False."""
     from app import dvdcss
 
-    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None: True)
+    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None, extra_dirs=None: True)
     assert main._dvdcss_state() == (True, "")
 
 
@@ -376,11 +456,13 @@ def test_dvdcss_state_passes_the_bundled_dir_into_the_hint(monkeypatch):
     from app import config, dvdcss
 
     monkeypatch.setattr(config, "bundled_dir", lambda: Path("/opt/disc2jelly"))
-    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None: False)
+    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None, extra_dirs=None: False)
     monkeypatch.setattr(dvdcss, "hint", lambda bundled=None: f"folder={bundled}")
     ok, hint = main._dvdcss_state()
     assert ok is False
-    assert hint == "folder=/opt/disc2jelly"
+    # str(Path(...)) is "\opt\disc2jelly" on Windows: compare against the
+    # platform's own rendering, not a POSIX literal.
+    assert hint == f"folder={Path('/opt/disc2jelly')}"
 
 
 def test_dvdcss_state_survives_a_broken_backend(monkeypatch):

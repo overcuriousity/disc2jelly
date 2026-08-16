@@ -16,6 +16,13 @@
 
 * { box-sizing: border-box; }
 
+/* The UI hides things with element.hidden, but the browser's own
+ * [hidden] { display: none } is only a default-stylesheet rule: any class of
+ * ours that sets `display` beats it. That is why the settings modal
+ * (.modal-backdrop, display: flex) ignored its Close button. Make `hidden`
+ * win everywhere — every JS hide/show in app.js depends on it. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);

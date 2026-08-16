@@ -40,6 +40,20 @@ MOVIES_ROOT = "Movies"
 SHOWS_ROOT = "Shows"
 CONTAINER_SUFFIX = ".mkv"
 
+# Naming styles. "jellyfin" follows the Jellyfin docs; "plain" matches the
+# convention many existing libraries already use — no [tmdbid-<id>] tag, and
+# the episode file repeats the decorated series name:
+#
+#   jellyfin: Shows/Dr. House (2004) [tmdbid-1408]/Season 01/Dr. House S01E05 - Role Model.mkv
+#   plain:    series/Dr. House (2004)/Season 01/Dr. House (2004) - S01E05.mkv
+#
+# The tag matters on disk, not just cosmetically: a library holding
+# "Dr. House (2004)" would gain a second, separate folder for every new rip if
+# we appended a tmdbid, splitting one show across two directories.
+NAMING_JELLYFIN = "jellyfin"
+NAMING_PLAIN = "plain"
+NAMING_STYLES = (NAMING_JELLYFIN, NAMING_PLAIN)
+
 # Characters Jellyfin reserves / that break filesystems (info.md §3).
 BANNED_CHARS = '<>:"/\\|?*'
 _BANNED_RE = re.compile("[" + re.escape(BANNED_CHARS) + "]")
@@ -405,19 +419,44 @@ def strip_banned_chars(name: str) -> str:
     return cleaned.strip()
 
 
+def clean_root(root: str, fallback: str) -> str:
+    """Sanitise a configured library root into a safe relative path.
+
+    Accepts nested roots ("media/movies"). Strips banned characters per
+    segment and drops "." and ".." so a root can never climb out of the
+    destination — LocalDestination refuses that anyway, but WebDAV has no
+    equivalent guard.
+    """
+    raw = (root or "").strip().replace("\\", "/")
+    segments = [
+        cleaned
+        for seg in raw.split("/")
+        if (cleaned := strip_banned_chars(seg)) and cleaned not in (".", "..")
+    ]
+    return "/".join(segments) or fallback
+
+
 def jellyfin_movie_relpath(
-    title: str, year: int | None, tmdb_id: int | None = None
+    title: str,
+    year: int | None,
+    tmdb_id: int | None = None,
+    *,
+    movies_root: str = MOVIES_ROOT,
+    style: str = NAMING_JELLYFIN,
 ) -> Path:
     """Relative path per https://jellyfin.org/docs/general/server/media/movies.
 
-    Folder: Movies/<Title> (<Year>)[ tmdbid-<id>]/
+    Folder: <movies_root>/<Title> (<Year>)[ tmdbid-<id>]/
     File:   <folder name, char-for-char identical>.mkv
+
+    style="plain" omits the tmdbid tag; see NAMING_STYLES.
     """
     clean = strip_banned_chars(title or "")
     if not clean:
         raise MetadataError("Cannot build a Jellyfin path from an empty title")
-    folder = _decorate(clean, year, tmdb_id)
-    return Path(MOVIES_ROOT) / folder / f"{folder}{CONTAINER_SUFFIX}"
+    folder = _decorate(clean, year, None if style == NAMING_PLAIN else tmdb_id)
+    root = clean_root(movies_root, MOVIES_ROOT)
+    return Path(root) / folder / f"{folder}{CONTAINER_SUFFIX}"
 
 
 def _decorate(name: str, year: int | None, tmdb_id: int | None) -> str:
@@ -436,25 +475,40 @@ def jellyfin_episode_relpath(
     season: int,
     episode: int,
     ep_title: str,
+    *,
+    shows_root: str = SHOWS_ROOT,
+    style: str = NAMING_JELLYFIN,
 ) -> Path:
     """Relative path per https://jellyfin.org/docs/general/server/media/shows.
 
-    Shows/<Series> (<Year>) [tmdbid-<id>]/Season <NN>/<Series> S<NN>E<NN> - <Title>.mkv
+    jellyfin: <shows_root>/<Series> (<Year>) [tmdbid-<id>]/Season <NN>/
+              <Series> S<NN>E<NN> - <Title>.mkv
+    plain:    <shows_root>/<Series> (<Year>)/Season <NN>/
+              <Series> (<Year>) - S<NN>E<NN>.mkv
 
-    The series folder carries the year and tmdbid tags; the episode file does
-    not, because Jellyfin matches episodes on the SxxExx token alone.
+    In the Jellyfin style the series folder carries the year and tmdbid tags
+    while the episode file does not, because Jellyfin matches episodes on the
+    SxxExx token alone. The plain style repeats the decorated folder name in
+    the file and omits the episode title, matching the layout most existing
+    libraries already have on disk.
     """
     clean_series = strip_banned_chars(series or "")
     if not clean_series:
         raise MetadataError("Cannot build a Jellyfin path from an empty series name")
 
-    folder = _decorate(clean_series, year, tmdb_id)
-    stem = f"{clean_series} S{season:02d}E{episode:02d}"
-    clean_title = strip_banned_chars(ep_title or "")
-    if clean_title:
-        stem += f" - {clean_title}"
+    plain = style == NAMING_PLAIN
+    folder = _decorate(clean_series, year, None if plain else tmdb_id)
+    token = f"S{season:02d}E{episode:02d}"
+    if plain:
+        stem = f"{folder} - {token}"
+    else:
+        stem = f"{clean_series} {token}"
+        clean_title = strip_banned_chars(ep_title or "")
+        if clean_title:
+            stem += f" - {clean_title}"
+    root = clean_root(shows_root, SHOWS_ROOT)
     return (
-        Path(SHOWS_ROOT)
+        Path(root)
         / folder
         / f"Season {season:02d}"
         / f"{stem}{CONTAINER_SUFFIX}"

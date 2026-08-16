@@ -108,3 +108,21 @@ def test_no_download_surface_remains() -> None:
     for gone in ("DOWNLOAD_URL", "EXPECTED_SHA256", "ensure_libdvdcss",
                  "_https_fetch", "LIBDVDCSS_VERSION"):
         assert not hasattr(dvdcss, gone), f"{gone} should be gone"
+
+
+def test_dll_is_accepted_in_the_pyinstaller_payload_dir(monkeypatch, tmp_path):
+    """HandBrakeCLI loads the DLL from its own directory, which in a onedir
+    build is _internal, not the folder the hint names."""
+    monkeypatch.setattr(dvdcss.sys, "platform", "win32")
+    exe_dir = tmp_path / "Disc2Jelly"
+    internal = exe_dir / "_internal"
+    internal.mkdir(parents=True)
+    (internal / dvdcss.DLL_NAME).write_bytes(b"")
+
+    assert dvdcss.is_available(exe_dir) is False
+    assert dvdcss.is_available(exe_dir, extra_dirs=[internal]) is True
+
+
+def test_hint_still_names_the_folder_the_user_can_reach(monkeypatch, tmp_path):
+    monkeypatch.setattr(dvdcss.sys, "platform", "win32")
+    assert str(tmp_path) in dvdcss.hint(tmp_path)

@@ -55,10 +55,19 @@ class Config:
         default_factory=lambda: baked_default("WEBDAV_PASSWORD"))
     # v3 api_key (or v4 read token)
     tmdb_api_key: str = field(default_factory=lambda: baked_default("TMDB_API_KEY"))
+    # Library layout on the destination. Roots may be nested ("media/movies").
+    movies_root: str = field(default_factory=lambda: baked_default("MOVIES_ROOT", "Movies"))
+    shows_root: str = field(default_factory=lambda: baked_default("SHOWS_ROOT", "Shows"))
+    naming_style: str = "jellyfin"  # "jellyfin" | "plain", see metadata.py
     temp_dir: str = ""            # default: <config dir>/work
     encoder: str = "hevc"         # "hevc" | "h264"
-    hevc_quality: int = 22        # RF/CRF
-    h264_quality: int = 20
+    # RF/CRF, lower = better. Tuned for DVD, the only source this app has:
+    # at 576 lines each pixel covers far more screen than at 1080p, so the
+    # artefacts that hide at RF 22 on HD are visible here. These values sit
+    # close to the MPEG-2 source's own ceiling; the disc, not the encoder,
+    # is then the limit.
+    hevc_quality: int = 18
+    h264_quality: int = 16
     handbrake_path: str = ""      # empty = auto-detect
     min_title_seconds: int = 600  # filter junk titles
 
@@ -129,10 +138,22 @@ def load(path: Path | None = None, defaults_path: Path | None = None) -> Config:
 
 
 def save(cfg: Config, path: Path | None = None) -> None:
+    """Write settings atomically, owner-readable only.
+
+    config.json holds the WebDAV password and the TMDb key in the clear, so it
+    is created 0600, and a config directory we create ourselves 0700 — the
+    default umask would otherwise leave both world-readable. An existing
+    directory keeps whatever mode the user gave it. Windows ignores the mode
+    bits; there the ACL on %APPDATA% does the same job.
+    """
     p = path or config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(asdict(cfg), indent=2) + "\n", encoding="utf-8")
+    # Create the temp file empty first: opening it via open() with mode 0600
+    # closes the window in which the secrets exist under a laxer mode.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(asdict(cfg), indent=2) + "\n")
     os.replace(tmp, p)
 
 
@@ -159,21 +180,47 @@ def find_binary(name: str, configured: str, os_candidates: list[str]) -> str | N
 
 
 def bundled_dir() -> Path:
-    """Where the installer puts HandBrakeCLI and libdvdcss.
+    """The folder we tell the user to drop libdvdcss-2.dll into.
 
     Frozen (PyInstaller): alongside the executable. Source checkout: ./vendor
     next to the app package, so a dev can drop binaries there too.
+
+    This is the *user-facing* location. Use bundled_dirs() to actually look
+    for a file — PyInstaller may have put it somewhere else.
     """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent / "vendor"
 
 
+def bundled_dirs() -> list[Path]:
+    """Every folder a bundled binary might actually live in.
+
+    PyInstaller 6 moved onedir payloads into a `_internal` subdirectory, so a
+    binary declared with target dir "." lands in
+    dist/Disc2Jelly/_internal/HandBrakeCLI.exe rather than next to the
+    executable. Looking only beside the exe meant a correctly built installer
+    shipped a HandBrakeCLI the app then reported as missing, on every Windows
+    machine.
+
+    Both are searched, exe directory first: that is where a user who followed
+    the libdvdcss instructions puts their own files, and where a build made
+    with an older PyInstaller placed everything.
+    """
+    dirs = [bundled_dir()]
+    meipass = getattr(sys, "_MEIPASS", None)  # set by PyInstaller at runtime
+    if meipass:
+        path = Path(meipass).resolve()
+        if path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
 def handbrake_candidates() -> list[str]:
     """Bundled copy first — the installer ships one and it is the known-good
     version — then the usual system install locations."""
     exe = "HandBrakeCLI.exe" if sys.platform.startswith("win") else "HandBrakeCLI"
-    cands = [str(bundled_dir() / exe)]
+    cands = [str(d / exe) for d in bundled_dirs()]
     if sys.platform.startswith("win"):
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
         pfx = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
