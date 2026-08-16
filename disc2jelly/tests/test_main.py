@@ -126,6 +126,56 @@ def test_config_put_rejects_a_blank_destination_kind(monkeypatch):
     assert not saved, "a rejected save must not reach disk"
 
 
+def test_config_put_rejects_an_unusable_library_root(monkeypatch):
+    """A root that sanitises to nothing would silently fall back to the default."""
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config())
+    client = TestClient(main.app)
+
+    resp = client.put("/api/config", json={"movies_root": "  "})
+    assert resp.status_code == 400
+    assert "movies_root" in resp.json()["error"]
+
+    resp = client.put("/api/config", json={"naming_style": "fancy"})
+    assert resp.status_code == 400
+    assert "naming_style" in resp.json()["error"]
+
+
+def test_config_put_accepts_a_nested_root(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config())
+    monkeypatch.setattr(config, "save",
+                        lambda cfg, path=None: saved.update(cfg=cfg))
+    client = TestClient(main.app)
+
+    resp = client.put("/api/config", json={
+        "movies_root": "movies", "shows_root": "series", "naming_style": "plain",
+    })
+    assert resp.status_code == 200, resp.text
+    assert saved["cfg"].shows_root == "series"
+    assert saved["cfg"].naming_style == "plain"
+
+
+def test_build_targets_uses_the_configured_layout(monkeypatch):
+    """The settings must reach the path builder, not just the config file."""
+    monkeypatch.setattr(main, "_load_config", lambda: config.Config(
+        movies_root="movies", shows_root="series", naming_style="plain"))
+
+    body = main.JobCreate(
+        drive="/dev/sr0", kind="series", title="Dr. House", year=2004,
+        tmdb_id=1408, profile="hevc", titles=[],
+        episodes=[main.EpisodeAssignment(
+            title_index=1, season=1, episode=5, name="Damned If You Do")],
+    )
+    targets = main._build_targets(body)
+    assert targets[0].relpath == (
+        "series/Dr. House (2004)/Season 01/Dr. House (2004) - S01E05.mkv")
+
+    movie = main.JobCreate(drive="/dev/sr0", kind="movie", title="The Matrix",
+                           year=1999, tmdb_id=603, profile="hevc", titles=[15])
+    assert main._build_targets(movie)[0].relpath == (
+        "movies/The Matrix (1999)/The Matrix (1999).mkv")
+
+
 def test_config_put_400_states_the_reason(monkeypatch):
     """A rejected save must say what was wrong, not just fail.
 

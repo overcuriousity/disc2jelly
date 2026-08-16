@@ -55,6 +55,10 @@ class Config:
         default_factory=lambda: baked_default("WEBDAV_PASSWORD"))
     # v3 api_key (or v4 read token)
     tmdb_api_key: str = field(default_factory=lambda: baked_default("TMDB_API_KEY"))
+    # Library layout on the destination. Roots may be nested ("media/movies").
+    movies_root: str = field(default_factory=lambda: baked_default("MOVIES_ROOT", "Movies"))
+    shows_root: str = field(default_factory=lambda: baked_default("SHOWS_ROOT", "Shows"))
+    naming_style: str = "jellyfin"  # "jellyfin" | "plain", see metadata.py
     temp_dir: str = ""            # default: <config dir>/work
     encoder: str = "hevc"         # "hevc" | "h264"
     hevc_quality: int = 22        # RF/CRF

@@ -189,6 +189,21 @@
       <details>
         <summary>Advanced</summary>
         <div class="field">
+          <label for="cfg-movies-root">Films folder on the destination</label>
+          <input type="text" id="cfg-movies-root" placeholder="Movies">
+        </div>
+        <div class="field">
+          <label for="cfg-shows-root">Series folder on the destination</label>
+          <input type="text" id="cfg-shows-root" placeholder="Shows">
+        </div>
+        <div class="field">
+          <label for="cfg-naming-style">File naming</label>
+          <select id="cfg-naming-style">
+            <option value="jellyfin">Jellyfin style — Show S01E05 - Episode.mkv</option>
+            <option value="plain">Plain style — Show (2004) - S01E05.mkv</option>
+          </select>
+        </div>
+        <div class="field">
           <label for="cfg-temp-dir">Temporary work folder</label>
           <input type="text" id="cfg-temp-dir" placeholder="leave empty for default">
         </div>

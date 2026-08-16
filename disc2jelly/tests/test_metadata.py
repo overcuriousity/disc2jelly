@@ -236,3 +236,36 @@ def test_relpath_file_matches_folder_char_for_char():
 def test_relpath_empty_title_raises():
     with pytest.raises(MetadataError):
         jellyfin_movie_relpath(":::", 2000)  # strips to nothing
+
+
+# ---------------------------------------------------------------------------
+# configurable movie root and naming style
+# ---------------------------------------------------------------------------
+
+
+def test_movie_relpath_honours_a_configured_root() -> None:
+    rel = jellyfin_movie_relpath("The Matrix", 1999, 603, movies_root="movies")
+    assert rel.parts[0] == "movies"
+
+
+def test_movie_plain_style_omits_the_tmdbid_tag() -> None:
+    rel = jellyfin_movie_relpath(
+        "The Matrix", 1999, 603, movies_root="movies", style="plain",
+    )
+    assert rel == Path("movies/The Matrix (1999)/The Matrix (1999).mkv")
+
+
+def test_clean_root_rejects_traversal_and_banned_chars() -> None:
+    from app.metadata import clean_root
+
+    assert clean_root("../../etc", "Movies") == "etc"
+    assert clean_root("media//movies/", "Movies") == "media/movies"
+    assert clean_root("we:ird?", "Movies") == "weird"
+    assert clean_root("   ", "Movies") == "Movies"
+    assert clean_root("..", "Movies") == "Movies"
+
+
+def test_clean_root_normalises_windows_separators() -> None:
+    from app.metadata import clean_root
+
+    assert clean_root(r"media\movies", "Movies") == "media/movies"

@@ -119,6 +119,23 @@ Switch the disc panel to **TV episodes**. Disc2Jelly reads `SEASON`/`S01`/`DISC`
 
 Files land as `Shows/<Series> (<Year>) [tmdbid-<id>]/Season 01/<Series> S01E01 - <Episode>.mkv`.
 
+### Matching an existing library
+
+Settings → Advanced has three fields for fitting into a library that is already
+organised its own way:
+
+| Setting | Default | What it does |
+|---|---|---|
+| Films folder | `Movies` | Top-level folder for films; may be nested (`media/movies`) |
+| Series folder | `Shows` | Same for TV |
+| File naming | Jellyfin style | `Jellyfin`: `<Series> S01E05 - <Episode>.mkv` in `<Series> (<Year>) [tmdbid-<id>]/`<br>`Plain`: `<Series> (<Year>) - S01E05.mkv` in `<Series> (<Year>)/` |
+
+Plain style drops the `[tmdbid-<id>]` tag deliberately. Jellyfin matches either
+way, but if your library already holds `Dr. House (2004)`, appending a tmdbid
+would create a *second* folder for the same show and split it across two
+directories. Plain style also omits the episode title, matching how most
+existing libraries name their files.
+
 Titles the scanner detects as duplicates (DVDs routinely expose the main feature more than once) are flagged and start unticked, rather than being dropped — on a season disc, losing a real episode is worse than showing an extra row.
 
 ## Encoding defaults

@@ -282,3 +282,55 @@ def test_resolve_api_key_returns_empty_when_nothing_is_configured(
 ) -> None:
     monkeypatch.setattr(metadata, "DEFAULT_TMDB_API_KEY", "")
     assert resolve_api_key("") == ""
+
+
+# ---------------------------------------------------------------------------
+# configurable roots and the "plain" naming style
+# ---------------------------------------------------------------------------
+
+
+def test_episode_relpath_honours_a_configured_shows_root() -> None:
+    p = jellyfin_episode_relpath(
+        "Show", 2000, 1, season=1, episode=1, ep_title="A", shows_root="series",
+    )
+    assert p.parts[0] == "series"
+
+
+def test_episode_relpath_accepts_a_nested_root() -> None:
+    p = jellyfin_episode_relpath(
+        "Show", 2000, 1, season=1, episode=1, ep_title="A",
+        shows_root="media/tv shows/",
+    )
+    assert p.parts[:2] == ("media", "tv shows")
+
+
+def test_plain_style_matches_an_existing_library_layout() -> None:
+    """<Series> (<Year>)/Season NN/<Series> (<Year>) - SNNENN.mkv"""
+    p = jellyfin_episode_relpath(
+        "Dr. House", 2004, 1408, season=1, episode=5, ep_title="Damned If You Do",
+        shows_root="series", style="plain",
+    )
+    assert p == Path("series/Dr. House (2004)/Season 01/Dr. House (2004) - S01E05.mkv")
+
+
+def test_plain_style_omits_the_tmdbid_tag_so_folders_do_not_split() -> None:
+    """A library holding "Show (2000)" must not gain "Show (2000) [tmdbid-1]"."""
+    p = jellyfin_episode_relpath(
+        "Show", 2000, 1, season=1, episode=1, ep_title="A", style="plain",
+    )
+    assert "tmdbid" not in str(p)
+    assert p.parts[1] == "Show (2000)"
+
+
+def test_plain_style_without_a_year() -> None:
+    p = jellyfin_episode_relpath(
+        "Show", None, None, season=2, episode=3, ep_title="", style="plain",
+    )
+    assert p.name == "Show - S02E03.mkv"
+
+
+def test_jellyfin_style_stays_the_default() -> None:
+    p = jellyfin_episode_relpath(
+        "Show", 2000, 1, season=1, episode=1, ep_title="A",
+    )
+    assert p == Path("Shows/Show (2000) [tmdbid-1]/Season 01/Show S01E01 - A.mkv")

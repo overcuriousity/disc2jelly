@@ -253,6 +253,8 @@ def _build_targets(body: JobCreate) -> list:
     from . import metadata  # lazy
     from .jobs import TitleTarget
 
+    cfg = _load_config()
+    style = getattr(cfg, "naming_style", "") or metadata.NAMING_JELLYFIN
     title = body.title.strip()
     targets = []
     if body.kind == "series":
@@ -275,10 +277,16 @@ def _build_targets(body: JobCreate) -> list:
                 relpath=metadata.jellyfin_episode_relpath(
                     series=title, year=body.year, tmdb_id=body.tmdb_id,
                     season=ep.season, episode=ep.episode, ep_title=ep.name,
+                    shows_root=getattr(cfg, "shows_root", "") or metadata.SHOWS_ROOT,
+                    style=style,
                 ).as_posix(),
             ))
     else:
-        base = metadata.jellyfin_movie_relpath(title, body.year, body.tmdb_id)
+        base = metadata.jellyfin_movie_relpath(
+            title, body.year, body.tmdb_id,
+            movies_root=getattr(cfg, "movies_root", "") or metadata.MOVIES_ROOT,
+            style=style,
+        )
         for i, index in enumerate(body.titles, start=1):
             # Extra titles (bonus features) share the movie folder under a
             # disambiguated name so Jellyfin still matches the main feature.
@@ -435,6 +443,15 @@ def _validate_config(values: dict) -> list[str]:
         errors.append("destination_kind must be 'local' or 'webdav'")
     if values.get("encoder") not in ("hevc", "h264"):
         errors.append("encoder must be 'hevc' or 'h264'")
+    if values.get("naming_style") not in ("jellyfin", "plain"):
+        errors.append("naming_style must be 'jellyfin' or 'plain'")
+    for key in ("movies_root", "shows_root"):
+        # clean_root() would silently fall back to the default, which reads as
+        # "the setting was ignored". Say so instead.
+        from . import metadata  # lazy
+        raw = values.get(key)
+        if not isinstance(raw, str) or not metadata.clean_root(raw, "") :
+            errors.append(f"{key} must be a folder name")
     for key in ("hevc_quality", "h264_quality"):
         try:
             q = int(values.get(key, 0))
