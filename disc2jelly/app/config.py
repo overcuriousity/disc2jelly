@@ -129,10 +129,22 @@ def load(path: Path | None = None, defaults_path: Path | None = None) -> Config:
 
 
 def save(cfg: Config, path: Path | None = None) -> None:
+    """Write settings atomically, owner-readable only.
+
+    config.json holds the WebDAV password and the TMDb key in the clear, so it
+    is created 0600, and a config directory we create ourselves 0700 — the
+    default umask would otherwise leave both world-readable. An existing
+    directory keeps whatever mode the user gave it. Windows ignores the mode
+    bits; there the ACL on %APPDATA% does the same job.
+    """
     p = path or config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(asdict(cfg), indent=2) + "\n", encoding="utf-8")
+    # Create the temp file empty first: opening it via open() with mode 0600
+    # closes the window in which the secrets exist under a laxer mode.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(asdict(cfg), indent=2) + "\n")
     os.replace(tmp, p)
 
 

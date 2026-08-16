@@ -55,6 +55,28 @@ def test_save_load_roundtrip(tmp_path: Path) -> None:
     assert loaded == cfg
 
 
+def test_save_keeps_secrets_owner_only(tmp_path: Path) -> None:
+    """config.json holds the WebDAV password; nobody else may read it."""
+    if sys.platform.startswith("win"):
+        pytest.skip("POSIX mode bits")
+    p = tmp_path / "sub" / "config.json"
+    config.save(config.Config(webdav_password="secret"), path=p)
+    assert p.stat().st_mode & 0o777 == 0o600
+    assert p.parent.stat().st_mode & 0o777 == 0o700
+    assert not list(tmp_path.rglob("*.tmp"))  # temp file replaced, not left behind
+
+
+def test_save_overwrite_keeps_mode(tmp_path: Path) -> None:
+    """A second save must not widen the mode via the umask on the new file."""
+    if sys.platform.startswith("win"):
+        pytest.skip("POSIX mode bits")
+    p = tmp_path / "config.json"
+    config.save(config.Config(webdav_password="one"), path=p)
+    config.save(config.Config(webdav_password="two"), path=p)
+    assert p.stat().st_mode & 0o777 == 0o600
+    assert config.load(path=p).webdav_password == "two"
+
+
 def test_load_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert config.load(path=tmp_path / "nope.json") == config.Config()
 
