@@ -89,3 +89,17 @@ def test_injection_via_a_config_value_cannot_execute() -> None:
     exec(compile(src, "_baked.py", "exec"), namespace)  # noqa: S102
     assert namespace["TMDB_API_KEY"] == hostile["tmdb_api_key"]
     assert "X" not in namespace
+
+
+def test_library_roots_are_bakeable():
+    """config.py reads baked MOVIES_ROOT/SHOWS_ROOT; gen_baked must emit them."""
+    src = gen_baked.render_baked(
+        {"movies_root": "movies", "shows_root": "series"}, include_password=False)
+    assert 'MOVIES_ROOT = "movies"' in src or "MOVIES_ROOT = 'movies'" in src
+    assert 'SHOWS_ROOT = "series"' in src or "SHOWS_ROOT = 'series'" in src
+
+
+def test_library_roots_fall_back_to_the_jellyfin_defaults():
+    src = gen_baked.render_baked({}, include_password=False)
+    assert "MOVIES_ROOT" in src and "Movies" in src
+    assert "SHOWS_ROOT" in src and "Shows" in src

@@ -19,6 +19,13 @@ local_path = ""
 webdav_url = ""
 webdav_user = ""
 
+# Library roots created under the destination. Set these to whatever the target
+# library already uses (e.g. "movies" / "series"); Linux paths are
+# case-sensitive, so "Movies" and "movies" are different folders. Nesting is
+# allowed ("media/movies"). Empty keeps the defaults below.
+movies_root = "Movies"
+shows_root = "Shows"
+
 # Fill this in and the installer stops asking: with the URL, user and password
 # all known, the wizard skips its credentials page entirely.
 # SECURITY: the price of that is a password compiled into Setup.exe, where

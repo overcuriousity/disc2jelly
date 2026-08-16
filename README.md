@@ -35,7 +35,7 @@ Build it from source, or copy the file from a player installation that already h
 | Component | Package |
 |---|---|
 | Python ≥ 3.11 | `python3`, `python3-venv` |
-| HandBrakeCLI | `handbrake-cli` (Debian/Ubuntu), `HandBrake-cli` (Fedora/RPM Fusion) |
+| HandBrakeCLI | `handbrake-cli` (Debian/Ubuntu), `HandBrake` (Fedora/RPM Fusion — the CLI ships in the main package; the old `HandBrake-cli` split no longer exists) |
 | libdvdcss | `libdvdcss2` via `libdvd-pkg` (Debian/Ubuntu), `libdvdcss` (Fedora/RPM Fusion) |
 
 A TMDb API key is optional — without one, type film and series names by hand.
@@ -156,7 +156,7 @@ Titles the scanner detects as duplicates (DVDs routinely expose the main feature
 ## Troubleshooting
 
 - **Red "Disc reader" dot**: libdvdcss is missing, and the banner names the folder it belongs in. Windows: put `libdvdcss-2.dll` there and restart. Linux: install your distro's `libdvdcss` package.
-- **Red "Movie shrinker" dot**: HandBrakeCLI not found. Linux: install `handbrake-cli`, or set the path in Settings (`handbrake_path`).
+- **Red "Movie shrinker" dot**: HandBrakeCLI not found. Linux: install it (see [Requirements](#requirements)), or set the path in Settings (`handbrake_path`).
 - **No disc found**: Linux — check the user can access the optical drive (`cdrom` group / udev rules).
 - **Upload fails with quota/auth errors**: check Settings → Test server connection; use an app password, not your main password.
 - **Progress bar stalls on "Analyzing source"**: HandBrake is scanning the disc, normal for 1–3 min.
@@ -167,8 +167,18 @@ Titles the scanner detects as duplicates (DVDs routinely expose the main feature
 
 ```
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # requirements.txt + pytest/httpx
+cd disc2jelly
 python -m pytest tests -q
+node --test tests/js_badge_logic.test.mjs tests/js_settings_numbers.test.mjs
 python -m app.main
 ```
+
+CI (`.github/workflows/`) runs pytest on Linux **and** Windows — config paths,
+binary discovery and the packaging guards all branch on `sys.platform` — plus a
+`windows-build` job that builds the installer, starts the frozen app and checks
+`/api/health`, then silently installs it and starts that. The frozen build is
+where this project keeps breaking (no std streams, entry-script imports,
+payload directory layout) and none of it is reachable from unit tests.
+
 SPEC.md = architecture contract. info.md = verified CLI/API format notes.

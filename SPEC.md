@@ -104,22 +104,28 @@ class Config:
     webdav_user: str = ""
     webdav_password: str = ""
     tmdb_api_key: str = ""        # v3 api_key; empty = _baked.TMDB_API_KEY
+    movies_root: str = "Movies"   # library root on the destination; may nest
+    shows_root: str = "Shows"
+    naming_style: str = "jellyfin"  # "jellyfin" | "plain", see metadata.py
     temp_dir: str = ""            # default: <config dir>/work
     encoder: str = "hevc"         # "hevc" | "h264"
     hevc_quality: int = 18        # RF/CRF, tuned for DVD (SD) sources
-    h264_quality: int = 20
+    h264_quality: int = 16
     handbrake_path: str = ""      # empty = auto-detect
     min_title_seconds: int = 600  # filter junk titles
 
 def load() -> Config
-def save(cfg: Config) -> None
+def save(cfg: Config) -> None      # config.json 0600, its directory 0700: secrets in the clear
 def config_path() -> Path
-def bundled_dir() -> Path          # next to the frozen exe, else ./vendor
+def bundled_dir() -> Path          # next to the frozen exe, else ./vendor — the folder shown to the user
+def bundled_dirs() -> list[Path]   # every place to LOOK: exe dir first, then sys._MEIPASS
 def find_binary(name: str, configured: str, os_candidates: list[str]) -> str|None
-def handbrake_candidates() -> list[str]   # bundled copy first
+def handbrake_candidates() -> list[str]   # bundled copies first
 def resolve_binaries(cfg: Config) -> str|None   # HandBrakeCLI path, or None
 ```
-`find_binary`: if configured path exists → it; else shutil.which; else probe candidate absolute paths; else None.
+`find_binary`: if configured path exists → it; else probe candidate absolute paths; else `shutil.which`; else None. Candidates come **before** PATH deliberately — the installer ships a known-good HandBrake, and letting PATH win would hand an arbitrary system copy the job.
+
+`bundled_dirs` exists because PyInstaller 6 puts onedir payloads in a `_internal` subdirectory: a binary declared with target dir `"."` lands in `dist/Disc2Jelly/_internal/`, not beside the executable. Looking only beside the exe made a correctly built installer report its own bundled HandBrakeCLI as missing.
 
 Build-time defaults live in generated `app/_baked.py` (TMDb key, destination kind, local path, WebDAV URL/user). Imported with a try/except fallback so a source checkout works with none of it. **The WebDAV password is not baked** unless `build_windows.ps1 -BakePassword` is used: PyInstaller does not obfuscate and any compiled-in string is recoverable with `strings`. The Inno Setup wizard writes the password to `%APPDATA%\disc2jelly\config.json` on the target machine instead.
 
@@ -149,7 +155,7 @@ def is_available(bundled_dir=None) -> bool
 def hint(bundled_dir=None) -> str
 def require(bundled_dir=None) -> None        # raises DvdCssError with the hint
 ```
-Detection only — this module never installs anything. Windows: `libdvdcss-2.dll` beside HandBrakeCLI. Linux: the system library via `ctypes.util.find_library`. When it is missing, `hint()` returns platform-specific instructions naming the exact target folder, which `/api/health` passes to the UI banner.
+Detection only — this module never installs anything. Windows: `libdvdcss-2.dll` in any of `config.bundled_dirs()` — the folder beside `Disc2Jelly.exe` (what the hint tells the user, and where they can actually put it) or PyInstaller's `_internal` payload directory, where HandBrakeCLI itself lives and from which it loads the DLL. Linux: the system library via `ctypes.util.find_library`. When it is missing, `hint()` returns platform-specific instructions naming the exact target folder, which `/api/health` passes to the UI banner.
 
 **There is no acquisition path, by necessity, not just by policy.** VideoLAN publishes libdvdcss as source tarballs only; there is no `win64/` directory and never has been, and VLC's Windows build links libdvdcss statically into `libdvdread_plugin.dll` rather than shipping a standalone DLL. The user supplies the file. Not redistributing it also keeps the original legal position intact — distributing a circumvention library is legally distinct from using one.
 
@@ -181,13 +187,21 @@ def encode(handbrake_path: str, src: Path, dst: Path, profile: str,
 class MovieMatch: tmdb_id: int; title: str; original_title: str; year: int|None; overview: str
 def search_movies(api_key: str, query: str) -> list[MovieMatch]   # TMDb /3/search/movie, requests, timeout 10
 def clean_query(disc_label: str) -> str   # "THE_MATRIX_16X9" → "The Matrix"-ish heuristic (strip 16X9/4X3/WS/FS/DISC\d/SEASON markers, underscores→spaces, title-case)
-def jellyfin_movie_relpath(title: str, year: int|None, tmdb_id: int|None = None) -> Path    # SACRED, see below
+def jellyfin_movie_relpath(title: str, year: int|None, tmdb_id: int|None = None, *,
+                           movies_root: str = MOVIES_ROOT,
+                           style: str = NAMING_JELLYFIN) -> Path    # SACRED, see below
+def clean_root(root: str, fallback: str) -> str   # sanitise a configured root; drops "." and ".."
 ```
 - TMDb auth: accept EITHER credential from config — if the stored value looks like a v4 token (length > 100, contains dots) send `Authorization: Bearer <token>`, else send v3 `?api_key=<key>`. Year = first 4 chars of `release_date`, guard empty string. Raise `MetadataError` on 401.
 - `jellyfin_movie_relpath` must follow https://jellyfin.org/docs/general/server/media/movies exactly (verified info.md §3):
-  - Folder `Movies/<Title> (<Year>)[ tmdbid-<id>]/`, file `<same name>.mkv` — file base name **char-for-char identical** to folder name.
+  - Folder `<movies_root>/<Title> (<Year>)[ tmdbid-<id>]/`, file `<same name>.mkv` — file base name **char-for-char identical** to folder name.
   - Year omitted if None; tmdb id tag `[tmdbid-123]` appended (space-separated) if provided.
   - Strip reserved chars `< > : " / \ | ? *` from title before composing (replace with nothing, collapse double spaces); do NOT touch umlauts/unicode otherwise.
+- **Naming styles.** `jellyfin` (default) is the above. `plain` omits the `[tmdbid-<id>]` tag and, for episodes, repeats the decorated series name and drops the episode title:
+  - `jellyfin`: `Shows/Dr. House (2004) [tmdbid-1408]/Season 01/Dr. House S01E05 - Damned If You Do.mkv`
+  - `plain`: `series/Dr. House (2004)/Season 01/Dr. House (2004) - S01E05.mkv`
+  - The tag is not cosmetic: a library already holding `Dr. House (2004)` would gain a *second* folder for the same show on every rip, splitting it across two directories on disk.
+- **Roots are config, not constants.** `MOVIES_ROOT`/`SHOWS_ROOT` are only the defaults; `cfg.movies_root`/`cfg.shows_root` win and may nest (`media/movies`). `clean_root` strips banned characters and drops `.`/`..` per segment so a configured root can never climb out of the destination — `LocalDestination` refuses that anyway, WebDAV has no equivalent guard.
 
 ### WebDAV (`webdav.py`)
 ```python
