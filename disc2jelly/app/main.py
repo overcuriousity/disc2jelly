@@ -140,8 +140,14 @@ def _dvdcss_state() -> tuple[bool, str]:
     try:
         from . import dvdcss  # lazy
 
-        bundled = _config_module().bundled_dir()
-        if dvdcss.is_available(bundled):
+        cfg_mod = _config_module()
+        bundled = cfg_mod.bundled_dir()
+        # The hint names the folder beside the executable — that is where a
+        # user can actually drop the DLL — but the check also accepts
+        # PyInstaller's _internal payload directory, where HandBrakeCLI itself
+        # lives in a onedir build.
+        extra = [d for d in cfg_mod.bundled_dirs() if d != bundled]
+        if dvdcss.is_available(bundled, extra_dirs=extra):
             return True, ""
         return False, dvdcss.hint(bundled)
     except Exception as exc:

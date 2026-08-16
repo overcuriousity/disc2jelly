@@ -51,13 +51,20 @@ def _find_system_library() -> str | None:
     return find_library("dvdcss")
 
 
-def is_available(bundled_dir: Path | str | None = None) -> bool:
-    """Is CSS decryption available? Never raises."""
+def is_available(bundled_dir: Path | str | None = None,
+                 extra_dirs: list[Path] | None = None) -> bool:
+    """Is CSS decryption available? Never raises.
+
+    `extra_dirs` covers PyInstaller's `_internal` payload directory: HandBrake
+    loads the DLL from its own directory, which in a onedir build is not the
+    one the user is told to use. Both are accepted.
+    """
     try:
         if sys.platform.startswith("win"):
-            if bundled_dir is None:
-                return False
-            return (Path(bundled_dir) / DLL_NAME).is_file()
+            candidates = [Path(d) for d in (extra_dirs or [])]
+            if bundled_dir is not None:
+                candidates.insert(0, Path(bundled_dir))
+            return any((d / DLL_NAME).is_file() for d in candidates)
         return _find_system_library() is not None
     except Exception:
         return False

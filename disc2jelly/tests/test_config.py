@@ -330,3 +330,49 @@ def test_bundled_dir_falls_back_to_the_repo_vendor_dir(
 ) -> None:
     monkeypatch.delattr(config.sys, "frozen", raising=False)
     assert config.bundled_dir().name == "vendor"
+
+
+# --- PyInstaller onedir layout ---------------------------------------------
+
+
+def test_bundled_dirs_includes_the_pyinstaller_payload_dir(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """PyInstaller 6 puts onedir payloads in _internal, not beside the exe.
+
+    A binary declared with target dir "." lands in
+    dist/Disc2Jelly/_internal/HandBrakeCLI.exe. Searching only beside the
+    executable meant a correctly built installer shipped a HandBrakeCLI the
+    app then reported as missing, on every Windows machine.
+    """
+    exe_dir = tmp_path / "Disc2Jelly"
+    internal = exe_dir / "_internal"
+    internal.mkdir(parents=True)
+    monkeypatch.setattr(config.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(config.sys, "executable", str(exe_dir / "Disc2Jelly.exe"))
+    monkeypatch.setattr(config.sys, "_MEIPASS", str(internal), raising=False)
+
+    dirs = config.bundled_dirs()
+    assert dirs[0] == exe_dir, "the exe directory must be searched first"
+    assert internal.resolve() in dirs
+
+
+def test_handbrake_is_found_inside_the_payload_dir(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    exe_dir = tmp_path / "Disc2Jelly"
+    internal = exe_dir / "_internal"
+    internal.mkdir(parents=True)
+    name = "HandBrakeCLI.exe" if sys.platform.startswith("win") else "HandBrakeCLI"
+    (internal / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(config.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(config.sys, "executable", str(exe_dir / "Disc2Jelly.exe"))
+    monkeypatch.setattr(config.sys, "_MEIPASS", str(internal), raising=False)
+
+    found = config.resolve_binaries(config.Config())
+    assert found is not None and Path(found).parent == internal
+
+
+def test_bundled_dirs_is_just_vendor_in_a_source_checkout(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config.sys, "frozen", False, raising=False)
+    monkeypatch.delattr(config.sys, "_MEIPASS", raising=False)
+    assert config.bundled_dirs() == [config.bundled_dir()]

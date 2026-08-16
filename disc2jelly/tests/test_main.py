@@ -448,7 +448,7 @@ def test_dvdcss_state_detects_the_system_library(monkeypatch):
     """Regression: _dvdcss_state must not swallow a NameError and report False."""
     from app import dvdcss
 
-    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None: True)
+    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None, extra_dirs=None: True)
     assert main._dvdcss_state() == (True, "")
 
 
@@ -456,7 +456,7 @@ def test_dvdcss_state_passes_the_bundled_dir_into_the_hint(monkeypatch):
     from app import config, dvdcss
 
     monkeypatch.setattr(config, "bundled_dir", lambda: Path("/opt/disc2jelly"))
-    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None: False)
+    monkeypatch.setattr(dvdcss, "is_available", lambda bundled=None, extra_dirs=None: False)
     monkeypatch.setattr(dvdcss, "hint", lambda bundled=None: f"folder={bundled}")
     ok, hint = main._dvdcss_state()
     assert ok is False

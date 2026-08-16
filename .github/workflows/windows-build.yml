@@ -42,11 +42,14 @@ jobs:
         run: |
           $app = "dist\Disc2Jelly\Disc2Jelly.exe"
           if (-not (Test-Path $app)) { throw "PyInstaller produced no $app" }
-          # HandBrakeCLI must sit next to the exe: config.bundled_dir() looks
-          # there first, and shipping without it means no disc can be read.
-          if (-not (Test-Path "dist\Disc2Jelly\HandBrakeCLI.exe")) {
-            throw "HandBrakeCLI.exe is missing from the bundle"
-          }
+          # HandBrakeCLI must be in the bundle somewhere config.bundled_dirs()
+          # looks — beside the exe, or in PyInstaller 6's _internal payload
+          # directory. Shipping without it means no disc can be read.
+          $hb = @("dist\Disc2Jelly\HandBrakeCLI.exe",
+                  "dist\Disc2Jelly\_internal\HandBrakeCLI.exe") |
+                Where-Object { Test-Path $_ }
+          if (-not $hb) { throw "HandBrakeCLI.exe is missing from the bundle" }
+          Write-Host "HandBrakeCLI: $hb"
           $setup = Get-ChildItem "dist\Disc2Jelly-Setup-*.exe" -ErrorAction SilentlyContinue
           if (-not $setup) { throw "Inno Setup produced no installer" }
           Write-Host "installer: $($setup.Name) ($([math]::Round($setup.Length/1MB,1)) MB)"

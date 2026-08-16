@@ -180,21 +180,47 @@ def find_binary(name: str, configured: str, os_candidates: list[str]) -> str | N
 
 
 def bundled_dir() -> Path:
-    """Where the installer puts HandBrakeCLI and libdvdcss.
+    """The folder we tell the user to drop libdvdcss-2.dll into.
 
     Frozen (PyInstaller): alongside the executable. Source checkout: ./vendor
     next to the app package, so a dev can drop binaries there too.
+
+    This is the *user-facing* location. Use bundled_dirs() to actually look
+    for a file — PyInstaller may have put it somewhere else.
     """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent / "vendor"
 
 
+def bundled_dirs() -> list[Path]:
+    """Every folder a bundled binary might actually live in.
+
+    PyInstaller 6 moved onedir payloads into a `_internal` subdirectory, so a
+    binary declared with target dir "." lands in
+    dist/Disc2Jelly/_internal/HandBrakeCLI.exe rather than next to the
+    executable. Looking only beside the exe meant a correctly built installer
+    shipped a HandBrakeCLI the app then reported as missing, on every Windows
+    machine.
+
+    Both are searched, exe directory first: that is where a user who followed
+    the libdvdcss instructions puts their own files, and where a build made
+    with an older PyInstaller placed everything.
+    """
+    dirs = [bundled_dir()]
+    meipass = getattr(sys, "_MEIPASS", None)  # set by PyInstaller at runtime
+    if meipass:
+        path = Path(meipass).resolve()
+        if path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
 def handbrake_candidates() -> list[str]:
     """Bundled copy first — the installer ships one and it is the known-good
     version — then the usual system install locations."""
     exe = "HandBrakeCLI.exe" if sys.platform.startswith("win") else "HandBrakeCLI"
-    cands = [str(bundled_dir() / exe)]
+    cands = [str(d / exe) for d in bundled_dirs()]
     if sys.platform.startswith("win"):
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
         pfx = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
